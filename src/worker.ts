@@ -1,4 +1,4 @@
-// Finline's worker: finds the focused workspace's repository (local or remote via SSH),
+// Finline's worker: finds the focused workspace's repository (local, in WSL, or remote via SSH),
 // reads it with git, runs the git actions the panel asks for, and watches/polls the repo so open panels refresh.
 import { watch, type FSWatcher } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -21,6 +21,7 @@ import {
   runGit
 } from './git'
 import { getSshTargetMap, resolveRemoteWorkspace, selectRemoteWorkspace } from './remote'
+import { wslFingerprint, wslLookupError, wslTarget, type WslTarget } from './wsl.ts'
 import type { ActionResult, Candidate, DetailsLoad, GraphLoad, StatusLoad, WorktreeLoad } from './types'
 
 const DEFAULT_LIMIT = 200
@@ -41,6 +42,9 @@ const RELEVANT =
 // Remote actions wait on the network; local ones should be quick but a big rebase is not.
 const REMOTE_TIMEOUT_MS = 120_000
 const LOCAL_TIMEOUT_MS = 60_000
+// fs.watch can't watch the WSL share (it throws EISDIR), so repositories there are polled
+// instead. Each poll starts wsl.exe and runs git status, so keep it infrequent.
+const WSL_POLL_MS = 10_000
 
 type Resolved =
   | { ok: true; path: string; resolvedBy: string; workspaceId?: string }
@@ -76,26 +80,29 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
   const context = await orca.host.call('workspace.readContext', {})
   if (!context) return { ok: false, reason: 'no-workspace', message: 'No workspace is focused.' }
 
-  // readContext carries no id or path (host API 1.3), so match it against workspace.list.
   const { workspaces } = await orca.host.call('workspace.list', {})
-  const matches = workspaces.filter(
-    (w) => w.name === context.displayName && (w.branch ?? null) === (context.branch || null)
-  )
+  // Newer hosts name the focused workspace with an id. For a worktree it is `<projectId>::<path>`,
+  // while workspace.list may give the same row an identity-based id, so compare both forms.
+  const id = context.workspaceId
+  const byId = id ? workspaces.filter((w) => w.id === id || `${w.projectId}::${w.path}` === id) : []
+  const found = (w: { path: string; id: string }, resolvedBy: string): Resolved => {
+    registerRepoHost(w.path, null)
+    workspaceIdByPath.set(w.path, w.id)
+    return { ok: true, path: w.path, resolvedBy, workspaceId: w.id }
+  }
+  if (byId.length > 0 && isLocal(byId[0].hostId)) return found(byId[0], 'workspace id')
+  // Without an id, match by name and branch.
+  const matches =
+    byId.length > 0
+      ? byId
+      : workspaces.filter((w) => w.name === context.displayName && (w.branch ?? null) === (context.branch || null))
 
   const local = matches.filter((w) => isLocal(w.hostId))
-  if (local.length === 1) {
-    registerRepoHost(local[0].path, null)
-    workspaceIdByPath.set(local[0].path, local[0].id)
-    return { ok: true, path: local[0].path, resolvedBy: 'name+branch (local)', workspaceId: local[0].id }
-  }
+  if (local.length === 1) return found(local[0], 'name+branch (local)')
 
   if (local.length > 1) {
     const pinned = preferredPath ? local.find((w) => samePath(w.path, preferredPath)) : undefined
-    if (pinned) {
-      registerRepoHost(pinned.path, null)
-      workspaceIdByPath.set(pinned.path, pinned.id)
-      return { ok: true, path: pinned.path, resolvedBy: `pinned (1 of ${local.length})`, workspaceId: pinned.id }
-    }
+    if (pinned) return found(pinned, `pinned (1 of ${local.length})`)
     const candidates: Candidate[] = local.map((w) => ({ path: w.path, name: basename(w.path), branch: w.branch }))
     return {
       ok: false,
@@ -129,7 +136,16 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
     return { ok: true, path: picked.path, resolvedBy: picked.resolvedBy, workspaceId: picked.workspaceId }
   }
 
-  // Fallback: If workspace.list is empty or only local, resolve via remote environment discovery
+  // Workspaces of Orca's WSL runtime can be missing from workspace.list; the id still names
+  // the path, which is usable when it exists inside a WSL distribution.
+  const idPath = id?.includes('::') ? id.slice(id.indexOf('::') + 2) : null
+  if (idPath && (await wslTarget(idPath))) {
+    registerRepoHost(idPath, null)
+    if (id) workspaceIdByPath.set(idPath, id)
+    return { ok: true, path: idPath, resolvedBy: 'workspace id (WSL path)', workspaceId: id }
+  }
+
+  // Last resort: remote workspaces workspace.list doesn't report, from Orca's profile state (macOS).
   const remoteResolved = await resolveRemoteWorkspace(context, preferredPath)
   if (remoteResolved.ok) {
     registerRepoHost(remoteResolved.path, remoteResolved.sshHost)
@@ -144,20 +160,29 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
     }
   }
 
-  if (remoteResolved.reason === 'ambiguous') {
-    return remoteResolved
-  }
+  if (remoteResolved.reason === 'ambiguous') return remoteResolved
 
+  orca.log(
+    `no workspace matches ${JSON.stringify(context)}; listed: ${JSON.stringify(
+      workspaces.map((w) => ({ id: w.id, name: w.name, branch: w.branch, hostId: w.hostId, path: w.path, projectId: w.projectId }))
+    )}`
+  )
   return {
     ok: false,
     reason: 'not-found',
-    message: `No workspace "${context.displayName}" on ${context.branch}.`
+    message: [
+      `No workspace "${context.displayName}" on ${context.branch || 'no branch'} (id ${id ?? 'none'}).`,
+      idPath ? wslLookupError() : null
+    ]
+      .filter(Boolean)
+      .join('
+')
   }
 }
 
 let watcher: FSWatcher | null = null
-let pollInterval: ReturnType<typeof setInterval> | null = null
 let worktreeWatcher: FSWatcher | null = null
+let poller: ReturnType<typeof setInterval> | null = null
 // The main worktree holds the git dir; its changes are the other watcher's business.
 const IN_GIT_DIR = /^\.git([\\/]|$)/
 
@@ -171,15 +196,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   async function watchRepo(path: string): Promise<boolean> {
     // A failed local watch leaves watcher null, so the next load retries it.
-    if (watchedPath === path && (watcher || pollInterval)) return true
-    watcher?.close()
-    watcher = null
-    worktreeWatcher?.close()
-    worktreeWatcher = null
-    if (pollInterval) {
-      clearInterval(pollInterval)
-      pollInterval = null
-    }
+    if (watchedPath === path && (watcher || poller)) return true
+    stopWatching()
     watchedPath = path
 
     const sshHost = getRepoHost(path)
@@ -190,7 +208,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       } catch {
         lastHeadHash = null
       }
-      pollInterval = setInterval(async () => {
+      poller = setInterval(async () => {
         if (watchedPath !== path) return
         try {
           const currentHead = (await git(path, ['rev-parse', 'HEAD'])).trim()
@@ -208,6 +226,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
 
     try {
+      const target = await wslTarget(path)
+      if (target) {
+        pollRepo(path, target)
+        return true
+      }
       const { commonDir } = await gitDirs(path)
       // The common dir holds refs and, under worktrees/<name>, each worktree's HEAD and index.
       watcher = watch(commonDir, { recursive: true }, (_event, file) => {
@@ -227,6 +250,29 @@ export default function activate(orca: OrcaWorkerApi): void {
       orca.log(`watch failed: ${(error as Error).message}`)
       return false
     }
+  }
+
+  /** Posts `repo.changed` and `worktree.changed` when a polled fingerprint of the repo changes. */
+  function pollRepo(path: string, target: WslTarget): void {
+    let last: { refs: string; worktree: string } | null = null
+    let busy = false
+    const tick = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const next = await wslFingerprint(target)
+        if (last && next.refs !== last.refs) orca.panels.post('repo.changed', { path })
+        if (last && next.worktree !== last.worktree) orca.panels.post('worktree.changed', { path })
+        last = next
+      } catch (error) {
+        orca.log(`poll failed: ${(error as Error).message}`)
+      } finally {
+        busy = false
+      }
+    }
+    poller = setInterval(tick, WSL_POLL_MS)
+    void tick()
+    orca.log(`polling ${target.path} in WSL (${target.distro}) every ${WSL_POLL_MS} ms`)
   }
 
   let worktreeTimer: ReturnType<typeof setTimeout> | null = null
@@ -327,8 +373,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     const built = buildArgs(action, { remotes: await remoteNames(path) })
     if (!built.ok) return { ok: false, message: built.message }
     const { workspaces } = await orca.host.call('workspace.list', {})
-    const workspace = workspaces.find((w) => samePath(w.path, path))
-    const workspaceId = workspace?.id || workspaceIdByPath.get(path)
+    // resolveRepo remembers the id of workspaces workspace.list leaves out (WSL runtime, remote).
+    const workspaceId = workspaces.find((w) => samePath(w.path, path))?.id ?? workspaceIdByPath.get(path)
     if (!workspaceId) return { ok: false, message: 'No Orca workspace has this repository open.' }
     // Every argument passed buildArgs' checks (names from a safe character set), so plain
     // quoting is enough for any shell the terminal runs.
@@ -358,13 +404,15 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 }
 
-export function deactivate(): void {
+function stopWatching(): void {
   watcher?.close()
   watcher = null
   worktreeWatcher?.close()
   worktreeWatcher = null
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
+  if (poller) clearInterval(poller)
+  poller = null
+}
+
+export function deactivate(): void {
+  stopWatching()
 }
