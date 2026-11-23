@@ -1,8 +1,10 @@
 // Finline diff editor: a custom editor for `.finline-diff` tickets (see ../ticket.ts). The ticket
 // only says which file of which commit to show; the diff itself comes from the worker
 // (`file.diff`) and is laid out here in two columns, old on the left and new on the right.
+// Code is coloured by ../highlight.ts, in a palette for Orca's light theme and one for its dark.
 // Read-only: it never edits the ticket.
 import { parsePatch, splitRows, wordDiff, type Cell, type Row, type Segment } from '../diff.ts'
+import { highlightLine, languageOf, mergeSegments, type Language, type LineState } from '../highlight.ts'
 import { el, icon } from '../graph/dom.ts'
 import { orca as frame, type Disposable, type FrameOrca } from '../graph/frame.ts'
 import { parseTicket, WORKTREE_REV, type Ticket } from '../ticket.ts'
@@ -70,33 +72,54 @@ function renderPath(file: string, from?: string): void {
   pathEl.title = from ? `${from} → ${file}` : file
 }
 
-function codeCell(cell: Cell | null, segments: Segment[] | null): HTMLElement[] {
+// A line this long is minified or generated: colouring it costs more than it tells.
+const MAX_COLOURED = 2000
+
+/** One file's side of the diff: its language, and the state its next line starts in. */
+interface Side {
+  lang: Language | null
+  state: LineState
+}
+
+/** The line's number and its code: syntax colours, with the changed parts of a modified line marked. */
+function codeCell(cell: Cell | null, segments: Segment[] | null, side: Side): HTMLElement[] {
   if (!cell) return [el('span', 'no empty'), el('span', 'code empty')]
   const code = el('span', `code ${cell.kind}`)
-  if (segments) {
-    for (const segment of segments) code.append(segment.changed ? el('span', 'chg', segment.text) : segment.text)
-  } else {
-    code.textContent = cell.text
+  let tokens = [{ text: cell.text, kind: null }] as ReturnType<typeof highlightLine>['tokens']
+  if (side.lang && cell.text.length <= MAX_COLOURED) {
+    const lit = highlightLine(side.lang, cell.text, side.state)
+    tokens = lit.tokens
+    side.state = lit.state
+  }
+  for (const piece of mergeSegments(tokens, segments)) {
+    const cls = `${piece.kind ? `t-${piece.kind}` : ''}${piece.changed ? ' chg' : ''}`.trim()
+    code.append(cls ? el('span', cls, piece.text) : piece.text)
   }
   return [el('span', `no ${cell.kind}`, String(cell.no)), code]
 }
 
-function renderRows(rows: Row[]): void {
+function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | null): void {
   const fragment = document.createDocumentFragment()
   changes = []
   let inChange = false
   let lastNo = 1
+  // Each file's lines come in order, so a comment or string open on one line carries to the next.
+  const old: Side = { lang: oldLang, state: null }
+  const fresh: Side = { lang: newLang, state: null }
   for (const row of rows) {
     if (row.gap) {
       fragment.append(el('div', 'gap', '⋯'))
       inChange = false
+      // Lines were left out: what the next one starts inside of is unknown.
+      old.state = null
+      fresh.state = null
       continue
     }
     const { left, right } = row
     const node = el('div', 'row')
     // A removed line beside an added one is one line that changed: mark what differs inside it.
     const words = left && right && left.kind === 'del' ? wordDiff(left.text, right.text) : null
-    node.append(...codeCell(left, words?.left ?? null), ...codeCell(right, words?.right ?? null))
+    node.append(...codeCell(left, words?.left ?? null, old), ...codeCell(right, words?.right ?? null, fresh))
     const changed = left?.kind !== 'context'
     if (changed && !inChange) changes.push(node)
     inChange = changed
@@ -137,7 +160,8 @@ function render(diff: FileDiff, keepScroll: boolean): void {
   oldSideEl.textContent = diff.oldRev ? short(diff.oldRev) : 'Not present'
   newSideEl.textContent = diff.newRev ? short(diff.newRev) : 'Working tree'
   const top = rowsEl.scrollTop
-  renderRows(rows)
+  const lang = languageOf(diff.file)
+  renderRows(rows, diff.from ? languageOf(diff.from) : lang, lang)
   noticeEl.hidden = true
   sidesEl.hidden = false
   rowsEl.hidden = false

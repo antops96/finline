@@ -61,6 +61,8 @@ Two processes talk through a typed request/post contract (`src/protocol.ts`, whi
 **Diff editor** (`src/diff/`, a `customEditors` entry for `.finline-diff`, an isolated frame like the panel):
 - It gets the ticket's text through `orca.document` (never a path), asks the worker for `file.diff` and draws two aligned columns: old file left, new file right, removed lines red, added lines green, changed words inside a modified line tinted stronger. It never edits the ticket.
 - `src/diff.ts` (pure, tested) parses the patch (`parsePatch`), pairs removed and added runs into rows (`splitRows`) and finds what changed inside a line (`wordDiff`).
+- Code is coloured by `src/highlight.ts` (pure, tested): a small scanner written for Finline, with no dependencies. It works a line at a time and carries a `LineState` (open block comment, multi-line string, open tag) to the file's next line; `languageOf` picks the language from the file name, and `mergeSegments` lays the syntax tokens over `wordDiff`'s changed parts. A new language is an entry in `SPECS` plus its extensions, with a test.
+- Orca gives frames no syntax colours, so `src/diff/style.css` has its own: a dark palette by default and a light one under `:root.light` (Orca puts `light` or `dark` on `<html>` and swaps it in place), repeated for `prefers-color-scheme: light` when neither class is there. Every syntax colour keeps a contrast of at least 4.5 on the plain background and on the red and green line tints; check that when changing one.
 - A diff of uncommitted changes reloads on `worktree.changed` and `repo.changed`; a commit's diff never changes.
 
 **Layout** (`src/layout.ts`, pure, shared by panel and tests): one pass over topo-ordered commits, keeping `lanes[]` (the hash each lane is heading to).

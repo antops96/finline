@@ -26,8 +26,8 @@
 - Click a commit to open its details under it: hash, parents, author and committer, the full
   message, and the changed files as a folder tree with line counts.
 - Click a file in the details to open its diff in an editor tab: the old file on the left, the new
-  one on the right, removed lines in red and added ones in green. It works for uncommitted
-  changes too.
+  one on the right, removed lines in red and added ones in green, with syntax colours that
+  follow Orca's light or dark theme. It works for uncommitted changes too.
 - Fits the narrow sidebar: author and hash columns appear only when there is room.
 - Git actions from a right-click on a commit or a badge (or Shift+F10, or the ⋯ in the details):
   - branches and tags: check out, create, rename, delete, push, delete from the remote;
@@ -76,8 +76,9 @@ remotes through git, with your git credentials.
 - Workspaces on remote (SSH) hosts are experimental and work on macOS only. Finline runs git there
   over `ssh` with your SSH config and keys, and checks for changes every 3 seconds, so a fetch or a
   new tag shows up on the next refresh rather than right away.
-- Diffs open only for repositories on this machine, not for remote (SSH) workspaces. They show
-  plain text, without syntax colours.
+- Diffs open only for repositories on this machine, not for remote (SSH) workspaces. Syntax
+  colours come from Finline's own small highlighter, not from the Orca theme or its grammars, and
+  cover the common languages; other files show as plain text.
 - On Windows, repositories inside WSL (whether Orca runs them in its WSL runtime or opens them as
   `\\wsl.localhost\…` folders) run `git` inside their distribution through `wsl.exe`, so that
   distribution needs `git`. Windows can't watch files inside WSL, so Finline checks those

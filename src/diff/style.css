@@ -1,6 +1,11 @@
-/* Colours come from Orca's theme (--orca-*), as in the graph panel. Red and green are mixed into
-   the background so removed and added lines read on a light theme and on a dark one. */
+/* Surfaces and text come from Orca's theme (--orca-*), as in the graph panel. Red and green are
+   mixed into the background, so removed and added lines sit on whatever the theme paints.
+   Orca gives frames no syntax colours, so those are Finline's own: one palette for dark themes
+   (the default here) and one for light ones. Orca puts `light` or `dark` on <html> and swaps it in
+   place when the theme changes; without either class the system preference decides. Each syntax
+   colour is picked to read on the plain background and on the red and green tints. */
 :root {
+  color-scheme: dark;
   --fg: var(--orca-foreground, #ddd);
   --muted: var(--orca-muted-foreground, #999);
   --bg: var(--orca-background, #1a1a1a);
@@ -10,14 +15,73 @@
   --surface-2: color-mix(in srgb, var(--fg) 7%, var(--bg));
   --red: #ef4444;
   --green: #10b981;
-  --del: color-mix(in srgb, var(--red) 15%, var(--bg));
-  --del-no: color-mix(in srgb, var(--red) 24%, var(--bg));
-  --del-chg: color-mix(in srgb, var(--red) 42%, var(--bg));
-  --add: color-mix(in srgb, var(--green) 15%, var(--bg));
-  --add-no: color-mix(in srgb, var(--green) 24%, var(--bg));
-  --add-chg: color-mix(in srgb, var(--green) 40%, var(--bg));
+  --tint: 15%;
+  --tint-no: 24%;
+  --tint-chg: 32%;
+  --del: color-mix(in srgb, var(--red) var(--tint), var(--bg));
+  --del-no: color-mix(in srgb, var(--red) var(--tint-no), var(--bg));
+  --del-chg: color-mix(in srgb, var(--red) var(--tint-chg), var(--bg));
+  --add: color-mix(in srgb, var(--green) var(--tint), var(--bg));
+  --add-no: color-mix(in srgb, var(--green) var(--tint-no), var(--bg));
+  --add-chg: color-mix(in srgb, var(--green) var(--tint-chg), var(--bg));
+  --t-comment: #9aa4ae;
+  --t-string: #ecc48d;
+  --t-number: #f78c6c;
+  --t-keyword: #d0a2f0;
+  --t-literal: #ff9e64;
+  --t-type: #5ccfe6;
+  --t-function: #8fb4ff;
+  --t-attr: #ffcb6b;
+  --t-tag: #5ccfe6;
   --code-font: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   --code-size: 12px;
+}
+
+/* The light palette, twice: when Orca says light, and when it says nothing and the system does. */
+:root.light {
+  color-scheme: light;
+  --fg: var(--orca-foreground, #1f2328);
+  --muted: var(--orca-muted-foreground, #656d76);
+  --bg: var(--orca-background, #fff);
+  --border: var(--orca-border, #d0d7de);
+  --red: #dc2626;
+  --green: #15803d;
+  --tint: 11%;
+  --tint-no: 20%;
+  --tint-chg: 22%;
+  --t-comment: #596069;
+  --t-string: #7a4f00;
+  --t-number: #a8370a;
+  --t-keyword: #6d28d9;
+  --t-literal: #92450a;
+  --t-type: #0b6577;
+  --t-function: #1d4ed8;
+  --t-attr: #8a2f10;
+  --t-tag: #0b6577;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark):not(.light) {
+    color-scheme: light;
+    --fg: var(--orca-foreground, #1f2328);
+    --muted: var(--orca-muted-foreground, #656d76);
+    --bg: var(--orca-background, #fff);
+    --border: var(--orca-border, #d0d7de);
+    --red: #dc2626;
+    --green: #15803d;
+    --tint: 11%;
+    --tint-no: 20%;
+    --tint-chg: 22%;
+    --t-comment: #596069;
+    --t-string: #7a4f00;
+    --t-number: #a8370a;
+    --t-keyword: #6d28d9;
+    --t-literal: #92450a;
+    --t-type: #0b6577;
+    --t-function: #1d4ed8;
+    --t-attr: #8a2f10;
+    --t-tag: #0b6577;
+  }
 }
 
 * {
@@ -220,14 +284,50 @@ body {
   background: var(--add-no);
 }
 
+/* Changed words come in several spans (one per syntax token), so they stay square to join up. */
 .del .chg {
   background: var(--del-chg);
-  border-radius: 2px;
 }
 
 .add .chg {
   background: var(--add-chg);
-  border-radius: 2px;
+}
+
+.t-comment {
+  color: var(--t-comment);
+  font-style: italic;
+}
+
+.t-string {
+  color: var(--t-string);
+}
+
+.t-number {
+  color: var(--t-number);
+}
+
+.t-keyword {
+  color: var(--t-keyword);
+}
+
+.t-literal {
+  color: var(--t-literal);
+}
+
+.t-type {
+  color: var(--t-type);
+}
+
+.t-function {
+  color: var(--t-function);
+}
+
+.t-attr {
+  color: var(--t-attr);
+}
+
+.t-tag {
+  color: var(--t-tag);
 }
 
 /* Nothing on this side: the line exists only in the other file. */
