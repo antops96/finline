@@ -9,6 +9,7 @@ import type {
   DetailsLoad,
   FileChange,
   GraphLoad,
+  OpenResult,
   Ref,
   RepoInfo,
   RepoStatus,
@@ -19,6 +20,7 @@ import type {
 import { commitMenu, createToolbar, initActions, refMenu, renderBanner } from './actions.ts'
 import { el, icon, ICONS, moving, svg } from './dom.ts'
 import { orca } from './frame.ts'
+import { toast } from './overlay.ts'
 
 const PAGE = 200
 const ROW_H = 24
@@ -650,7 +652,7 @@ function renderWorktree(changes: WorktreeChanges): void {
   }
   info.append(meta)
   const grid = el('div', 'details-grid')
-  grid.append(info, renderFiles(changes.files, changes.filesTruncated))
+  grid.append(info, renderFiles(changes.files, changes.filesTruncated, WORKTREE))
   morphDetails(() => detailsEl.replaceChildren(detailsControls(false), grid))
 }
 
@@ -700,7 +702,7 @@ function renderDetails(d: CommitDetails): void {
 
   const grid = el('div', 'details-grid')
   const mergeBase = d.parents.length > 1 && d.comparedTo ? d.comparedTo : undefined
-  grid.append(info, renderFiles(d.files, d.filesTruncated, mergeBase))
+  grid.append(info, renderFiles(d.files, d.filesTruncated, d.hash, mergeBase))
   morphDetails(() => detailsEl.replaceChildren(detailsControls(), grid))
 }
 
@@ -769,7 +771,7 @@ const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensiti
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 /** Folders first, then files, each by name; every folder folds on click. */
-function renderFolderContents(folder: Folder): HTMLElement {
+function renderFolderContents(folder: Folder, rev: string): HTMLElement {
   const list = el('ul', 'tree')
   for (const child of [...folder.folders.values()].sort((a, b) => byName(a.name, b.name))) {
     const { label, folder: shown } = compact(child)
@@ -778,7 +780,7 @@ function renderFolderContents(folder: Folder): HTMLElement {
     toggle.type = 'button'
     toggle.setAttribute('aria-expanded', 'true')
     toggle.append(chevron(), treeIcon('folder'), el('span', 'name', label))
-    const contents = renderFolderContents(shown)
+    const contents = renderFolderContents(shown, rev)
     toggle.addEventListener('click', () => {
       const open = toggle.getAttribute('aria-expanded') !== 'true'
       toggle.setAttribute('aria-expanded', String(open))
@@ -799,15 +801,38 @@ function renderFolderContents(folder: Folder): HTMLElement {
     list.append(item)
   }
   for (const file of [...folder.files].sort((a, b) => byName(baseName(a.path), baseName(b.path)))) {
-    list.append(renderFile(file))
+    const item = el('li', '')
+    item.append(renderFile(file, rev))
+    list.append(item)
   }
   return list
 }
 
-function renderFile(file: FileChange): HTMLElement {
-  const item = el('li', `tree-row file s-${file.status}${file.untracked ? ' untracked' : ''}`)
+/** Opens the file's diff in an editor tab: `rev` is the commit, or `WORKTREE` for uncommitted changes. */
+async function openDiff(file: FileChange, rev: string): Promise<void> {
+  if (!repo) return
+  let result: OpenResult
+  try {
+    result = await orca.plugin.request('diff.open', {
+      path: repo.path,
+      rev,
+      file: file.path,
+      ...(file.from ? { from: file.from } : {})
+    })
+  } catch (error) {
+    const e = error as { code?: string; message?: string }
+    result = { ok: false, message: `${e.code ?? 'error'}: ${e.message ?? String(error)}` }
+  }
+  if (!result.ok) toast({ tone: 'error', title: 'Could not open the diff', detail: result.message })
+}
+
+/** A file of a commit, or of the uncommitted changes (`rev` is `WORKTREE`): a click opens its diff. */
+function renderFile(file: FileChange, rev: string): HTMLElement {
+  const item = el('button', `tree-row file s-${file.status}${file.untracked ? ' untracked' : ''}`)
+  item.type = 'button'
   const what = file.untracked ? 'Untracked' : STATUS_NAMES[file.status]
-  item.title = `${what}: ${file.from ? `${file.from} → ${file.path}` : file.path}`
+  item.title = `${what}: ${file.from ? `${file.from} → ${file.path}` : file.path}\nClick to open the diff`
+  item.addEventListener('click', () => void openDiff(file, rev))
   item.append(treeIcon('file'), el('span', 'name', baseName(file.path)))
   if (file.from) item.append(el('span', 'from', `← ${file.from}`))
   if (file.added !== null) {
@@ -832,8 +857,11 @@ function treeIcon(kind: 'folder' | 'file'): SVGSVGElement {
   return node
 }
 
-/** `mergeBase` labels a merge's list with the first parent it is compared with. */
-function renderFiles(files: FileChange[], truncated: boolean, mergeBase?: string): HTMLElement {
+/**
+ * `rev` is what a click on a file diffs: the commit, or `WORKTREE`. `mergeBase` labels a merge's
+ * list with the first parent it is compared with.
+ */
+function renderFiles(files: FileChange[], truncated: boolean, rev: string, mergeBase?: string): HTMLElement {
   const section = el('div', 'details-files')
   const added = files.reduce((sum, f) => sum + (f.added ?? 0), 0)
   const deleted = files.reduce((sum, f) => sum + (f.deleted ?? 0), 0)
@@ -850,7 +878,7 @@ function renderFiles(files: FileChange[], truncated: boolean, mergeBase?: string
     section.append(el('p', 'pending', 'No file changes.'))
     return section
   }
-  section.append(renderFolderContents(buildTree(files)))
+  section.append(renderFolderContents(buildTree(files), rev))
   if (truncated) section.append(el('p', 'pending', `Only the first ${files.length} files are listed.`))
   return section
 }

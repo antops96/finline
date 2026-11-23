@@ -11,7 +11,7 @@ Orca's plugin docs live in `stablyai/orca` under `docs/reference/`: `plugin-auth
 ## Commands
 
 ```sh
-node --test src/*.test.ts                                        # layout, git parser and action tests (Node >= 22.18 strips types)
+node --test src/*.test.ts                                        # layout, git parser, diff, ticket and action tests (Node >= 22.18 strips types)
 node --test --test-name-pattern="merge" src/layout.test.ts       # a single test
 orca plugin validate .                                           # manifest checks the catalog runs
 orca plugin dev load . [--approve <fingerprint>]                 # load as dev plugin `local.finline`
@@ -42,18 +42,26 @@ Two processes talk through a typed request/post contract (`src/protocol.ts`, whi
 - `repo.status {path}` reads branch, upstream, ahead/behind, staged/unstaged/untracked/conflict counts (`git status --porcelain=v2 --branch -z`) and a stopped merge, rebase, cherry-pick or revert (marker files in the git dir).
 - `git.run {path, action}` runs one `GitAction` (`src/types.ts`). `src/actions.ts` (pure, tested) validates every name, hash and remote and turns the action into fixed git arguments; the panel never sends raw arguments. It runs with `GIT_TERMINAL_PROMPT=0` and `GIT_EDITOR=true`, stdin closed and a timeout, so nothing waits on a prompt, and classifies failures as `auth`, `conflict`, `timeout` or `failed`. One action per repo at a time.
 - `git.terminal {path, action}` is the fallback for remote actions that need credentials: it opens an Orca terminal (`terminal.create`) in the workspace with the same validated command.
+- `diff.open {path, rev, file, from?}` opens one file's diff in an editor tab. Orca has no diff API and `editor.open` takes only a path relative to and inside the workspace (the OS temp dir is refused), so the worker writes a **ticket** (`src/ticket.ts`, `src/ticket-store.ts`): a small JSON file `.finline/<hash>/<file> (<commit>).finline-diff` in the workspace saying which diff to show. `.finline/` is added to `<commonDir>/info/exclude` so git never lists it, the 20 newest tickets are kept, and nothing is written through a symbolic link. `rev` is a commit hash or `worktree`. SSH repos are refused.
+- `file.diff {path, rev, file, from?}` returns that file's `git diff` (`readFileDiff` in `src/git.ts`): a commit against its first parent (`--root` for a root commit) or the working tree against HEAD, with the whole file as context. Over `MAX_PATCH` (400 000 characters) it falls back to 3 lines of context (`partial`), then cuts (`truncated`). An untracked file gets a synthesized all-added patch. Paths go to git with `--literal-pathspecs`. Unlike the other handlers it also accepts a path that is a local workspace in `workspace.list`, because a restored diff tab can ask before any panel has loaded the graph.
 - Refs come back typed (`head | branch | remote | tag | detached`) by matching `%D` decorations against `git remote` names. `<remote>/HEAD` is dropped.
 
 **Panel** (`src/graph/`, `ui: "html"`, an isolated frame with no Node or network, talking only through `window.orca`):
 - It must be an html panel: components panels (`ui: "components"`) can't draw SVG or canvas.
 - `main.ts` holds all commits loaded so far, re-runs the layout over the full list on every change, and re-renders the SVG plus the DOM rows (built with `createElement`, never `innerHTML`).
 - Refresh triggers: worker `repo.changed`, `workspace.changed`, and an explicit load in setup. The panel does not get the documented initial `workspace.changed` delivery.
+- Clicking a file in the details (a commit's or the uncommitted changes') requests `diff.open`; a failure is a toast.
 - Clicking a commit opens its details as an expanded row right under it (`#details`, moved into `#rows`). The graph pushes the rows below down by the details' height (a `ResizeObserver` redraws it). Details are cached per hash until the repo switches.
 - With uncommitted changes (from `repo.status` counts) the list starts with a virtual row, id `worktree` (never a hex hash), whose only parent is HEAD: `rows` is that row plus `commits`, and paging still counts `commits` only. Its details come from `worktree.changes`, are never cached, and reload on every status change. It has no action menu.
 - Modules: `frame.ts` (the `window.orca` surface), `dom.ts` (`el`, `svg`, icons, reduced motion), `overlay.ts` (context menu, dialog, toast: html panels get no native ones, and browser dialogs would block the host), `actions.ts` (git action menus, toolbar, banner, and the confirm → `git.run` → toast flow).
 - Right-click on a row opens the commit's menu, on a badge that ref's menu; it never changes the selection or the details. Before an action that changes the worktree, the panel re-reads status and `agents.list` and puts uncommitted changes or a working agent in the confirm dialog. Dialogs preview the git command through the same `buildArgs` the worker runs.
 - Paging is triggered by scroll. Refresh reloads `max(PAGE, loaded)` from the top, and a `seq` counter discards stale answers.
 - The ambiguous-repo choice is pinned in `localStorage`, keyed by every current terminal id (unique per workspace), and propagated to new terminals on each pinned load. Atoms with `persist: 'workspace'` exist only for components panels.
+
+**Diff editor** (`src/diff/`, a `customEditors` entry for `.finline-diff`, an isolated frame like the panel):
+- It gets the ticket's text through `orca.document` (never a path), asks the worker for `file.diff` and draws two aligned columns: old file left, new file right, removed lines red, added lines green, changed words inside a modified line tinted stronger. It never edits the ticket.
+- `src/diff.ts` (pure, tested) parses the patch (`parsePatch`), pairs removed and added runs into rows (`splitRows`) and finds what changed inside a line (`wordDiff`).
+- A diff of uncommitted changes reloads on `worktree.changed` and `repo.changed`; a commit's diff never changes.
 
 **Layout** (`src/layout.ts`, pure, shared by panel and tests): one pass over topo-ordered commits, keeping `lanes[]` (the hash each lane is heading to).
 - A commit takes the first lane expecting it, or a free lane. Other lanes expecting it converge and are freed.
@@ -81,4 +89,4 @@ The listing at `onorca.dev/plugins/dennib/finline` updates after the indexer run
 
 - Don't copy code from the VS Code "Git Graph" extension (mhutchie). Its license isn't MIT. Reimplement from scratch and don't use "Git Graph" as a name.
 - MIT-licensed. Orca's listing policy forbids paywalls or license keys in listed plugins.
-- The worker writes to the repository only through `git.run`. A new git action goes into `GitAction` and `buildArgs` with a test, never as arguments assembled in the panel.
+- The worker writes to the repository only through `git.run`, with one exception: diff tickets under `.finline/` and the `.finline/` line in `info/exclude` (`src/ticket-store.ts`). A new git action goes into `GitAction` and `buildArgs` with a test, never as arguments assembled in the panel.

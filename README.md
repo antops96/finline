@@ -25,6 +25,9 @@
 - Loads 200 commits at a time as you scroll.
 - Click a commit to open its details under it: hash, parents, author and committer, the full
   message, and the changed files as a folder tree with line counts.
+- Click a file in the details to open its diff in an editor tab: the old file on the left, the new
+  one on the right, removed lines in red and added ones in green. It works for uncommitted
+  changes too.
 - Fits the narrow sidebar: author and hash columns appear only when there is room.
 - Git actions from a right-click on a commit or a badge (or Shift+F10, or the ⋯ in the details):
   - branches and tags: check out, create, rename, delete, push, delete from the remote;
@@ -50,9 +53,13 @@ Finline is a **full-access** plugin (`trusted-worker`): Orca asks you to approve
 
 - **Runs a worker process** that calls your system `git` in the focused workspace's folder and
   watches that repository's `.git` folder for changes. It reads on its own; it changes the
-  repository only when you pick an action, with fixed git arguments it validates first.
+  repository only when you pick an action, with fixed git arguments it validates first. Opening
+  a diff writes a small ticket file under `.finline/` in the workspace and adds that folder to
+  the repository's local `.git/info/exclude`, so git never lists it.
 - **`workspace:read`**: reads the focused workspace's name and branch, and the list of workspaces,
   to find which repository to show.
+- **`workspace:write`**: opens a file's diff in an editor tab. Orca grants this together with
+  renaming workspaces and running its built-in commands; Finline only opens diff tabs.
 - **`agent:read`**: sees whether an agent is working in the workspace, to warn you before an
   action changes its files.
 - **`terminal:send`**: when a fetch, pull or push needs credentials git cannot ask for in the
@@ -69,6 +76,8 @@ remotes through git, with your git credentials.
 - Workspaces on remote (SSH) hosts are experimental and work on macOS only. Finline runs git there
   over `ssh` with your SSH config and keys, and checks for changes every 3 seconds, so a fetch or a
   new tag shows up on the next refresh rather than right away.
+- Diffs open only for repositories on this machine, not for remote (SSH) workspaces. They show
+  plain text, without syntax colours.
 - On Windows, repositories inside WSL (whether Orca runs them in its WSL runtime or opens them as
   `\\wsl.localhost\…` folders) run `git` inside their distribution through `wsl.exe`, so that
   distribution needs `git`. Windows can't watch files inside WSL, so Finline checks those
@@ -85,6 +94,7 @@ orca plugin validate .                 # the catalog's manifest checks
 - `src/worker.ts` (worker): resolves the repository, runs `git`, watches `.git`.
 - `src/layout.ts`: assigns lanes and routes edges; pure, with tests.
 - `src/graph/` (html panel): draws the graph and the commit list.
+- `src/diff/` (custom editor): shows one file's diff side by side in an editor tab.
 
 To try the panel on another repository, put its path in `.orca/dev-repo.txt` (git-ignored). The
 worker then shows that repository instead of the focused workspace.
