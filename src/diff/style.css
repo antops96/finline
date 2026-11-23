@@ -1,0 +1,283 @@
+/* Colours come from Orca's theme (--orca-*), as in the graph panel. Red and green are mixed into
+   the background so removed and added lines read on a light theme and on a dark one. */
+:root {
+  --fg: var(--orca-foreground, #ddd);
+  --muted: var(--orca-muted-foreground, #999);
+  --bg: var(--orca-background, #1a1a1a);
+  --border: var(--orca-border, #333);
+  --hover: color-mix(in srgb, var(--fg) 8%, transparent);
+  --surface-1: color-mix(in srgb, var(--fg) 3%, var(--bg));
+  --surface-2: color-mix(in srgb, var(--fg) 7%, var(--bg));
+  --red: #ef4444;
+  --green: #10b981;
+  --del: color-mix(in srgb, var(--red) 15%, var(--bg));
+  --del-no: color-mix(in srgb, var(--red) 24%, var(--bg));
+  --del-chg: color-mix(in srgb, var(--red) 42%, var(--bg));
+  --add: color-mix(in srgb, var(--green) 15%, var(--bg));
+  --add-no: color-mix(in srgb, var(--green) 24%, var(--bg));
+  --add-chg: color-mix(in srgb, var(--green) 40%, var(--bg));
+  --code-font: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --code-size: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  min-height: 36px;
+}
+
+.path {
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path .dir {
+  color: var(--muted);
+}
+
+.path .base {
+  font-weight: 600;
+}
+
+.path .arrow {
+  color: var(--muted);
+  margin: 0 6px;
+}
+
+.stat {
+  display: flex;
+  gap: 6px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.plus {
+  color: var(--green);
+}
+
+.minus {
+  color: var(--red);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: center;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+}
+
+.icon:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.icon:focus-visible,
+.button:focus-visible,
+.rows:focus-visible {
+  outline: 1px solid var(--orca-primary, #3b82f6);
+  outline-offset: -1px;
+}
+
+.icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.banner {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, #f59e0b 14%, var(--bg));
+  flex: none;
+}
+
+.sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--muted);
+  font: 11px/1 var(--code-font);
+}
+
+.side {
+  padding: 6px 10px;
+}
+
+.side + .side {
+  border-left: 1px solid var(--border);
+}
+
+.rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font: var(--code-size) / 1.5 var(--code-font);
+  tab-size: 4;
+  --no-w: 5ch;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: var(--no-w) minmax(0, 1fr) var(--no-w) minmax(0, 1fr);
+}
+
+.no {
+  padding: 0 1ch;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.code {
+  padding: 0 1ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* The new file's number column starts the right half. */
+.row > :nth-child(3) {
+  border-left: 1px solid var(--border);
+}
+
+.code.del {
+  background: var(--del);
+}
+
+.no.del {
+  background: var(--del-no);
+}
+
+.code.add {
+  background: var(--add);
+}
+
+.no.add {
+  background: var(--add-no);
+}
+
+.del .chg {
+  background: var(--del-chg);
+  border-radius: 2px;
+}
+
+.add .chg {
+  background: var(--add-chg);
+  border-radius: 2px;
+}
+
+/* Nothing on this side: the line exists only in the other file. */
+.empty {
+  background: repeating-linear-gradient(135deg, transparent 0 5px, var(--surface-2) 5px 6px);
+}
+
+.gap {
+  padding: 2px 0;
+  border-block: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--muted);
+  text-align: center;
+  user-select: none;
+}
+
+.notice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+.notice p {
+  margin: 0;
+  max-width: 60ch;
+}
+
+.button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}

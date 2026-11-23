@@ -1,1 +1,30 @@
-<!doctype html><html><body>placeholder</body></html>
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Finline diff</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="path" id="path"></span>
+      <span class="stat" id="stat" hidden></span>
+      <span class="spacer"></span>
+      <span class="nav" id="nav" hidden>
+        <button class="icon" id="prev" type="button" title="Previous change" aria-label="Previous change"></button>
+        <span class="count" id="count" aria-live="polite"></span>
+        <button class="icon" id="next" type="button" title="Next change" aria-label="Next change"></button>
+      </span>
+      <button class="icon" id="refresh" type="button" title="Refresh" aria-label="Refresh"></button>
+    </header>
+    <section class="banner" id="banner" role="status" hidden></section>
+    <div class="sides" id="sides" hidden>
+      <span class="side" id="old-side"></span>
+      <span class="side" id="new-side"></span>
+    </div>
+    <main class="rows" id="rows" tabindex="0" aria-label="Diff" hidden></main>
+    <section class="notice" id="notice" role="status" hidden></section>
+    <script type="module" src="main.ts"></script>
+  </body>
+</html>
