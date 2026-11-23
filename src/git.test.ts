@@ -218,6 +218,20 @@ test('file diff follows a rename', async () => {
   }
 })
 
+test('file diff shows a file renamed without a change as all added', async () => {
+  const { dir } = await diffRepo()
+  try {
+    await git(dir, ['mv', 'i.tsx', 'moved.tsx'])
+    await git(dir, ['commit', '-q', '-m', 'move'])
+    const head = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+    const diff = await readFileDiff(dir, { rev: head, file: 'moved.tsx', from: 'i.tsx' })
+    assert.equal(diff.from, 'i.tsx')
+    assert.deepEqual(changed(diff.patch), [{ kind: '+', text: 'plain 2' }])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('file diff takes a name with glob characters literally', async () => {
   const { dir, head } = await diffRepo()
   try {

@@ -150,3 +150,43 @@ export function wordDiff(a: string, b: string): { left: Segment[]; right: Segmen
   }
   return { left: side(ta), right: side(tb) }
 }
+
+/**
+ * The side that holds every line when the other has none: 'new' for an added file (or one shown
+ * whole after a rename), 'old' for a deleted one. Null when both sides have lines to compare.
+ */
+export function onlySide(rows: readonly Row[]): 'old' | 'new' | null {
+  let left = false
+  let right = false
+  for (const row of rows) {
+    if (row.gap) continue
+    left ||= row.left !== null
+    right ||= row.right !== null
+    if (left && right) return null
+  }
+  return left ? 'old' : right ? 'new' : null
+}
+
+/** A run of consecutive changed rows: removed, added, or both side by side (`mod`). */
+export interface Run {
+  kind: 'del' | 'add' | 'mod'
+  /** Index of its first row, and the index after its last. */
+  from: number
+  to: number
+}
+
+/** Where the changes are, as runs of rows of one kind, for the overview beside the scrollbar. */
+export function changeRuns(rows: readonly Row[]): Run[] {
+  const runs: Run[] = []
+  rows.forEach((row, index) => {
+    if (row.gap) return
+    const del = row.left?.kind === 'del'
+    const add = row.right?.kind === 'add'
+    if (!del && !add) return
+    const kind = del && add ? 'mod' : del ? 'del' : 'add'
+    const last = runs[runs.length - 1]
+    if (last && last.kind === kind && last.to === index) last.to = index + 1
+    else runs.push({ kind, from: index, to: index + 1 })
+  })
+  return runs
+}

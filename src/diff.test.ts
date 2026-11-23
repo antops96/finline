@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parsePatch, splitRows, wordDiff, type Row } from './diff.ts'
+import { changeRuns, onlySide, parsePatch, splitRows, wordDiff, type Row } from './diff.ts'
 
 const HEADER = ['diff --git a/a.txt b/a.txt', 'index 111..222 100644', '--- a/a.txt', '+++ b/a.txt']
 const patch = (...lines: string[]) => [...HEADER, ...lines, ''].join('\n')
@@ -103,4 +103,28 @@ test('wordDiff gives up when lines share nothing but whitespace, or are equal', 
   assert.equal(wordDiff('  foo()', '  bar.baz'), null)
   assert.equal(wordDiff('same', 'same'), null)
   assert.equal(wordDiff('abc', 'xyz'), null)
+})
+
+test('onlySide tells an added or deleted file from one with both sides', () => {
+  const added = splitRows(parsePatch(patch('@@ -0,0 +1,2 @@', '+one', '+two')).hunks)
+  const deleted = splitRows(parsePatch(patch('@@ -1,2 +0,0 @@', '-one', '-two')).hunks)
+  const edited = splitRows(parsePatch(patch('@@ -1,2 +1,2 @@', ' one', '-two', '+TWO')).hunks)
+  assert.equal(onlySide(added), 'new')
+  assert.equal(onlySide(deleted), 'old')
+  assert.equal(onlySide(edited), null)
+  assert.equal(onlySide([]), null)
+})
+
+test('changeRuns groups consecutive changed rows by kind', () => {
+  const rows = splitRows(
+    parsePatch(patch('@@ -1,6 +1,6 @@', ' a', '-b', '-c', '+B', ' d', '+new', ' e', '-gone', ' f')).hunks
+  )
+  // rows: a | b→B | c→(nothing) | d | +new | e | -gone | f
+  assert.deepEqual(changeRuns(rows), [
+    { kind: 'mod', from: 1, to: 2 },
+    { kind: 'del', from: 2, to: 3 },
+    { kind: 'add', from: 4, to: 5 },
+    { kind: 'del', from: 6, to: 7 }
+  ])
+  assert.deepEqual(changeRuns([]), [])
 })

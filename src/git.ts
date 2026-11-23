@@ -565,7 +565,7 @@ export async function readFileDiff(
   // Pathspecs are relative to cwd, which may sit below the repository root.
   const prefix = (await git(cwd, ['rev-parse', '--show-prefix'], signal)).trim()
   const up = prefix.split('/').filter(Boolean).map(() => '../').join('')
-  const paths = [...(from ? [up + from] : []), up + file]
+  let paths = [...(from ? [up + from] : []), up + file]
   // --literal-pathspecs: a name like `[id].tsx` is that file, not a pattern.
   const options = (context: number) => ['-M', '--no-ext-diff', `--unified=${context}`]
   let oldRev: string | null
@@ -586,6 +586,12 @@ export async function readFileDiff(
 
   let patch = await git(cwd, command(WHOLE_FILE), signal)
   let partial = false
+  if (from && /^similarity index 100%$/m.test(patch) && !/^@@ /m.test(patch)) {
+    // Renamed without a change: git prints headers and no lines, so show the file as it is under
+    // its new name. Alone in the pathspec it has no source to be a rename of: every line is added.
+    paths = [up + file]
+    patch = await git(cwd, command(WHOLE_FILE), signal)
+  }
   if (patch === '' && rev === WORKTREE_REV) {
     const others = await git(cwd, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', up + file], signal)
     if (others.trim() !== '') {

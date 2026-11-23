@@ -3,7 +3,7 @@
 // (`file.diff`) and is laid out here in two columns, old on the left and new on the right.
 // Code is coloured by ../highlight.ts, in a palette for Orca's light theme and one for its dark.
 // Read-only: it never edits the ticket.
-import { parsePatch, splitRows, wordDiff, type Cell, type Row, type Segment } from '../diff.ts'
+import { changeRuns, onlySide, parsePatch, splitRows, wordDiff, type Cell, type Row, type Run, type Segment } from '../diff.ts'
 import { highlightLine, languageOf, mergeSegments, type Language, type LineState } from '../highlight.ts'
 import { el, icon } from '../graph/dom.ts'
 import { orca as frame, type Disposable, type FrameOrca } from '../graph/frame.ts'
@@ -32,7 +32,10 @@ const bannerEl = $('banner')
 const sidesEl = $('sides')
 const oldSideEl = $('old-side')
 const newSideEl = $('new-side')
+const bodyEl = $('body')
 const rowsEl = $('rows')
+const mapEl = $('map')
+const mapTrackEl = $('map-track')
 const noticeEl = $('notice')
 
 $('prev').append(icon('M4 10l4-4 4 4'))
@@ -50,7 +53,7 @@ let current = -1
 const short = (rev: string) => rev.slice(0, 7)
 
 function showNotice(text: string, retry = false): void {
-  rowsEl.hidden = true
+  bodyEl.hidden = true
   sidesEl.hidden = true
   navEl.hidden = true
   noticeEl.replaceChildren(el('p', '', text))
@@ -98,8 +101,13 @@ function codeCell(cell: Cell | null, segments: Segment[] | null, side: Side): HT
   return [el('span', `no ${cell.kind}`, String(cell.no)), code]
 }
 
-function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | null): void {
+/**
+ * `only` is the side to draw alone, across the whole width: an added or deleted file has
+ * nothing on the other side to stand beside.
+ */
+function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | null, only: 'old' | 'new' | null): void {
   const fragment = document.createDocumentFragment()
+  rowNodes = []
   changes = []
   let inChange = false
   let lastNo = 1
@@ -108,7 +116,9 @@ function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | n
   const fresh: Side = { lang: newLang, state: null }
   for (const row of rows) {
     if (row.gap) {
-      fragment.append(el('div', 'gap', '⋯'))
+      const gap = el('div', 'gap', '⋯')
+      rowNodes.push(gap)
+      fragment.append(gap)
       inChange = false
       // Lines were left out: what the next one starts inside of is unknown.
       old.state = null
@@ -119,7 +129,9 @@ function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | n
     const node = el('div', 'row')
     // A removed line beside an added one is one line that changed: mark what differs inside it.
     const words = left && right && left.kind === 'del' ? wordDiff(left.text, right.text) : null
-    node.append(...codeCell(left, words?.left ?? null, old), ...codeCell(right, words?.right ?? null, fresh))
+    if (only !== 'new') node.append(...codeCell(left, words?.left ?? null, old))
+    if (only !== 'old') node.append(...codeCell(right, words?.right ?? null, fresh))
+    rowNodes.push(node)
     const changed = left?.kind !== 'context'
     if (changed && !inChange) changes.push(node)
     inChange = changed
@@ -127,8 +139,74 @@ function renderRows(rows: Row[], oldLang: Language | null, newLang: Language | n
     fragment.append(node)
   }
   rowsEl.style.setProperty('--no-w', `${String(lastNo).length + 2}ch`)
+  rowsEl.classList.toggle('single', only !== null)
   rowsEl.replaceChildren(fragment)
 }
+
+// ---- Overview: where the changes are, beside the scrollbar -----------------------------------
+
+/** The element of each row, gaps included, in the order of the rows the runs index. */
+let rowNodes: HTMLElement[] = []
+let runs: Run[] = []
+const mapViewEl = el('div', 'map-view')
+
+/**
+ * Draws a mark per run of changes at its place in the file: red for removed lines, green for
+ * added, both halves for changed ones. Lines wrap, so places come from where the rows really are.
+ * A file shorter than the view keeps its marks beside its lines.
+ */
+function drawMap(): void {
+  const first = rowNodes[0]
+  const last = rowNodes[rowNodes.length - 1]
+  if (!first || !last || bodyEl.hidden) return
+  const top = first.getBoundingClientRect().top
+  const total = last.getBoundingClientRect().bottom - top
+  if (total <= 0) return
+  const track = Math.min(mapEl.clientHeight, total)
+  mapTrackEl.style.height = `${track}px`
+  const marks = runs.map((run) => {
+    const from = rowNodes[run.from].getBoundingClientRect().top - top
+    const to = rowNodes[run.to - 1].getBoundingClientRect().bottom - top
+    const mark = el('div', `map-mark ${run.kind}`)
+    mark.style.top = `${(from / total) * track}px`
+    mark.style.height = `${Math.max(2, ((to - from) / total) * track)}px`
+    return mark
+  })
+  mapTrackEl.replaceChildren(...marks, mapViewEl)
+  placeMapView()
+}
+
+/** The part of the file on screen, as a frame over the marks. */
+function placeMapView(): void {
+  const { scrollTop, scrollHeight, clientHeight } = rowsEl
+  const track = mapTrackEl.clientHeight
+  mapViewEl.hidden = scrollHeight <= clientHeight
+  mapViewEl.style.top = `${(scrollTop / scrollHeight) * track}px`
+  mapViewEl.style.height = `${(clientHeight / scrollHeight) * track}px`
+}
+
+/** A press or drag on the overview brings that place of the file to the middle of the view. */
+function scrollToMap(event: PointerEvent): void {
+  const box = mapTrackEl.getBoundingClientRect()
+  const ratio = Math.min(1, Math.max(0, (event.clientY - box.top) / box.height))
+  rowsEl.scrollTop = ratio * rowsEl.scrollHeight - rowsEl.clientHeight / 2
+}
+
+mapEl.addEventListener('pointerdown', (event) => {
+  mapEl.setPointerCapture(event.pointerId)
+  scrollToMap(event)
+})
+mapEl.addEventListener('pointermove', (event) => {
+  if (mapEl.hasPointerCapture(event.pointerId)) scrollToMap(event)
+})
+rowsEl.addEventListener('scroll', placeMapView, { passive: true })
+
+// Resizing rewraps the lines, which moves every change.
+let mapFrame = 0
+new ResizeObserver(() => {
+  cancelAnimationFrame(mapFrame)
+  mapFrame = requestAnimationFrame(drawMap)
+}).observe(rowsEl)
 
 function goTo(index: number, smooth = true): void {
   if (changes.length === 0) return
@@ -157,15 +235,24 @@ function render(diff: FileDiff, keepScroll: boolean): void {
     return showNotice(diff.truncated ? 'The changed lines are too long to show here.' : 'No changes to the content of this file.')
   }
 
-  oldSideEl.textContent = diff.oldRev ? short(diff.oldRev) : 'Not present'
-  newSideEl.textContent = diff.newRev ? short(diff.newRev) : 'Working tree'
+  // A file with lines on one side only is drawn alone, across the whole width.
+  const only = onlySide(rows)
+  const newName = diff.newRev ? short(diff.newRev) : 'Working tree'
+  oldSideEl.textContent = only === 'old' ? `Deleted · was in ${diff.oldRev ? short(diff.oldRev) : '?'}` : diff.oldRev ? short(diff.oldRev) : 'Not present'
+  newSideEl.textContent = only === 'new' ? `${diff.from ? 'Renamed, no changes' : 'New file'} · ${newName}` : newName
+  oldSideEl.hidden = only === 'new'
+  newSideEl.hidden = only === 'old'
+  sidesEl.classList.toggle('single', only !== null)
   const top = rowsEl.scrollTop
   const lang = languageOf(diff.file)
-  renderRows(rows, diff.from ? languageOf(diff.from) : lang, lang)
+  renderRows(rows, diff.from ? languageOf(diff.from) : lang, lang, only)
+  runs = changeRuns(rows)
   noticeEl.hidden = true
   sidesEl.hidden = false
-  rowsEl.hidden = false
-  navEl.hidden = changes.length === 0
+  bodyEl.hidden = false
+  drawMap()
+  // One block of added or removed lines is all there is: nothing to step through.
+  navEl.hidden = changes.length === 0 || only !== null
   if (keepScroll) {
     rowsEl.scrollTop = top
     current = Math.min(current, changes.length - 1)
@@ -196,7 +283,7 @@ async function load(again: boolean): Promise<void> {
   }
   if (mine !== seq) return
   if (!result.ok) return showNotice(result.message, true)
-  render(result.diff, again && !rowsEl.hidden)
+  render(result.diff, again && !bodyEl.hidden)
 }
 
 function onDocument(doc: OrcaDocument): void {

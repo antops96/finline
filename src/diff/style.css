@@ -232,8 +232,19 @@ body {
   border-left: 1px solid var(--border);
 }
 
+.sides.single {
+  grid-template-columns: 1fr;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .rows {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -261,6 +272,11 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
+}
+
+/* An added or deleted file: its one side takes the whole width. */
+.rows.single .row {
+  grid-template-columns: var(--no-w) minmax(0, 1fr);
 }
 
 /* The new file's number column starts the right half. */
@@ -342,6 +358,50 @@ body {
   color: var(--muted);
   text-align: center;
   user-select: none;
+}
+
+/* Overview beside the scrollbar: a mark for every run of changes, at its place in the file. */
+.map {
+  flex: none;
+  width: 14px;
+  border-left: 1px solid var(--border);
+  background: var(--surface-1);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.map-track {
+  position: relative;
+}
+
+.map-mark {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 1px;
+}
+
+.map-mark.del {
+  background: var(--red);
+}
+
+.map-mark.add {
+  background: var(--green);
+}
+
+/* A changed line: the old half red, the new half green, as in the two columns. */
+.map-mark.mod {
+  background: linear-gradient(to right, var(--red) 50%, var(--green) 50%);
+}
+
+.map-view {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: 6px;
+  border-block: 1px solid color-mix(in srgb, var(--fg) 70%, transparent);
+  background: color-mix(in srgb, var(--fg) 28%, transparent);
+  pointer-events: none;
 }
 
 .notice {

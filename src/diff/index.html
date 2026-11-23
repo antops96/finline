@@ -23,7 +23,12 @@
       <span class="side" id="old-side"></span>
       <span class="side" id="new-side"></span>
     </div>
-    <main class="rows" id="rows" tabindex="0" aria-label="Diff" hidden></main>
+    <div class="body" id="body" hidden>
+      <main class="rows" id="rows" tabindex="0" aria-label="Diff"></main>
+      <div class="map" id="map" aria-hidden="true">
+        <div class="map-track" id="map-track"></div>
+      </div>
+    </div>
     <section class="notice" id="notice" role="status" hidden></section>
     <script type="module" src="main.ts"></script>
   </body>
