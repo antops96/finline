@@ -17,6 +17,8 @@ export interface Commit {
   authoredAt: number
   subject: string
   refs: Ref[]
+  /** In search results: the line of the body that matched, when the subject alone did not. */
+  excerpt?: string
 }
 
 /** git's status letters: added, modified, deleted, renamed, copied, type changed, unmerged, unknown. */
@@ -214,6 +216,9 @@ export type GraphLoad =
       message: string
       candidates: Candidate[]
     }
+
+/** The commits a search found, newest first. */
+export type SearchLoad = { ok: true; commits: Commit[]; /** More matched than were sent. */ truncated: boolean } | { ok: false; message: string }
 
 /** One file's diff to show: `rev` is a commit hash, or 'worktree' for the uncommitted changes. */
 export interface DiffTarget {

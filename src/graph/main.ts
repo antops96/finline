@@ -2,6 +2,7 @@
 // commit list. It talks to the worker with orca.plugin.request and refreshes when the worker
 // posts `repo.changed` or Orca reports `workspace.changed`. Git actions live in actions.ts.
 import { edgePath, layoutGraph, type Layout } from '../layout.ts'
+import { hasAllTerms, searchTerms, splitMarks } from '../search.ts'
 import type {
   Candidate,
   Commit,
@@ -13,6 +14,7 @@ import type {
   Ref,
   RepoInfo,
   RepoStatus,
+  SearchLoad,
   Stash,
   StatusLoad,
   WorktreeChanges,
@@ -21,7 +23,7 @@ import type {
 import { commitMenu, createToolbar, initActions, initBranchSwitcher, refMenu, renderBanner, stashMenu, worktreeMenu } from './actions.ts'
 import { el, icon, ICONS, moving, svg } from './dom.ts'
 import { orca } from './frame.ts'
-import { toast, tooltip } from './overlay.ts'
+import { openMenu, toast, tooltip } from './overlay.ts'
 
 const PAGE = 200
 const ROW_H = 24
@@ -37,6 +39,12 @@ const repoEl = $<HTMLElement>('repo')
 const branchEl = $<HTMLButtonElement>('branch')
 const branchNameEl = $<HTMLElement>('branch-name')
 const refreshEl = $<HTMLButtonElement>('refresh')
+const searchEl = $<HTMLButtonElement>('search')
+const optionsEl = $<HTMLButtonElement>('options')
+const searchBoxEl = $<HTMLElement>('search-box')
+const searchInputEl = $<HTMLInputElement>('search-input')
+const searchCountEl = $<HTMLElement>('search-count')
+const searchClearEl = $<HTMLButtonElement>('search-clear')
 const switchRepoEl = $<HTMLButtonElement>('switch-repo')
 const messageEl = $<HTMLElement>('message')
 const listEl = $<HTMLElement>('list')
@@ -117,10 +125,141 @@ async function unpin(): Promise<void> {
 
 // ---- Loading -------------------------------------------------------------------------------
 
-async function request(input: { limit: number; skip: number }): Promise<GraphLoad> {
+async function request(page: { limit: number; skip: number }): Promise<GraphLoad> {
   const preferred = await pinnedPath()
+  const input = { ...page, remotes: showRemotes }
   // The host refuses keys whose value is undefined, so add preferredPath only when set.
   return orca.plugin.request('graph.load', preferred ? { ...input, preferredPath: preferred } : input)
+}
+
+// ---- View options ----------------------------------------------------------------------------
+
+const REMOTES_KEY = 'finline.showRemotes'
+
+function readShowRemotes(): boolean {
+  try {
+    return localStorage.getItem(REMOTES_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+/** Off: remote branches lose their badges, and commits only they reach leave the graph. */
+let showRemotes = readShowRemotes()
+
+function setShowRemotes(on: boolean): void {
+  showRemotes = on
+  try {
+    localStorage.setItem(REMOTES_KEY, String(on))
+  } catch {
+    // Storage is off: the choice lasts until the panel reloads.
+  }
+  optionsEl.classList.toggle('active', !on)
+  // Fewer commits may be reachable now: start over from the first page.
+  commits = []
+  void refresh()
+}
+
+// ---- Search ----------------------------------------------------------------------------------
+// The worker searches the whole history (subjects, bodies, branch and tag names); while a search
+// is on, the list shows what it found instead of the graph, with the words highlighted.
+
+interface Search {
+  query: string
+  terms: string[]
+  results: Commit[]
+  truncated: boolean
+  /** The answer for this query has not come yet; `results` are the previous query's. */
+  pending: boolean
+  error: string | null
+}
+
+let search: Search | null = null
+let searchSeq = 0
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+const SEARCH_DEBOUNCE_MS = 200
+
+function setQuery(query: string): void {
+  if (searchTimer) clearTimeout(searchTimer)
+  const terms = searchTerms(query)
+  if (terms.length === 0) {
+    searchSeq++
+    const was = search
+    search = null
+    renderSearchState()
+    if (was) {
+      select(null)
+      renderList()
+      queueMicrotask(maybeLoadMore)
+    }
+    return
+  }
+  search = { query, terms, results: search?.results ?? [], truncated: false, pending: true, error: null }
+  renderSearchState()
+  renderList()
+  searchTimer = setTimeout(() => void runSearch(), SEARCH_DEBOUNCE_MS)
+}
+
+async function runSearch(): Promise<void> {
+  const mine = ++searchSeq
+  const path = repo?.path
+  if (!search || !path) return
+  const { query } = search
+  let result: SearchLoad
+  try {
+    result = await orca.plugin.request('graph.search', { path, query, remotes: showRemotes })
+  } catch (error) {
+    const e = error as { code?: string; message?: string }
+    result = { ok: false, message: `${e.code ?? 'error'}: ${e.message ?? String(error)}` }
+  }
+  if (mine !== searchSeq || !search || repo?.path !== path) return
+  search = result.ok
+    ? { ...search, results: result.commits, truncated: result.truncated, pending: false, error: null }
+    : { ...search, results: [], truncated: false, pending: false, error: result.message }
+  renderSearchState()
+  renderList()
+}
+
+/** Stashes whose message has every word, then the commits the worker found. */
+function searchRows(found: Search): Commit[] {
+  const mine = stashes.filter((stash) => hasAllTerms(`${stash.message} stash@{${stash.index}}`, found.terms))
+  return [...mine.map((stash) => stashCommit(stash, false)), ...found.results]
+}
+
+function renderSearchState(): void {
+  searchEl.classList.toggle('active', search !== null)
+  searchClearEl.hidden = searchInputEl.value === ''
+  if (!search) searchCountEl.textContent = ''
+  else if (search.pending) searchCountEl.textContent = '…'
+  else if (search.error) searchCountEl.textContent = 'failed'
+  else {
+    const count = searchRows(search).length
+    searchCountEl.textContent = `${count}${search.truncated ? '+' : ''} ${count === 1 ? 'commit' : 'commits'}`
+  }
+}
+
+function openSearch(): void {
+  searchBoxEl.hidden = false
+  searchEl.setAttribute('aria-expanded', 'true')
+  searchInputEl.focus()
+  searchInputEl.select()
+}
+
+/** Closing the bar keeps the search: the lens stays lit until the field is cleared. */
+function closeSearch(): void {
+  if (searchBoxEl.hidden) return
+  searchBoxEl.hidden = true
+  searchEl.setAttribute('aria-expanded', 'false')
+}
+
+/** Appends text to a node with the searched words marked. */
+function fill<T extends HTMLElement>(node: T, text: string): T {
+  if (!search) {
+    node.textContent = text
+    return node
+  }
+  for (const part of splitMarks(text, search.terms)) node.append(part.hit ? el('mark', '', part.text) : part.text)
+  return node
 }
 
 /** Reloads from the top, keeping as many commits as are already shown. */
@@ -189,6 +328,7 @@ async function apply(result: GraphLoad, append: boolean): Promise<void> {
   if (!append) {
     animateArrivals(shown)
     void loadStatus()
+    if (search) void runSearch() // the history moved under the search
   }
   // A short page may not fill the list; keep loading until it scrolls.
   queueMicrotask(maybeLoadMore)
@@ -378,6 +518,9 @@ function stashCommit(stash: Stash, withBase: boolean): Commit {
 }
 
 const stashOf = (hash: string | null | undefined) => (hash ? stashes.find((s) => s.hash === hash) : undefined)
+/** A real commit on screen: one the graph loaded, or one a search found deeper in the history. */
+const commitOf = (hash: string | null | undefined) =>
+  hash ? (commits.find((c) => c.hash === hash) ?? search?.results.find((c) => c.hash === hash)) : undefined
 
 /**
  * The uncommitted-changes row, then the commits, each stash right above the commit it was made
@@ -407,19 +550,30 @@ function buildRows(wip: Commit | null): Commit[] {
 }
 
 function renderList(): void {
-  const wip = wipCommit()
-  rows = buildRows(wip)
-  layout = layoutGraph(rows)
+  // A search lists what it found: those commits are not next to each other in the history, so
+  // each is a node on its own, with no lines between them.
+  rows = search ? searchRows(search) : buildRows(wipCommit())
+  layout = layoutGraph(search ? rows.map((commit) => ({ ...commit, parents: [] })) : rows)
+  // Without lanes a colour per node would mean nothing.
+  if (search) layout = { ...layout, colors: layout.colors.map(() => 0) }
   graphWidth = PAD_X * 2 + Math.max(1, layout.width) * COL_W
   if (rows.length === 0) {
-    rowsEl.replaceChildren(repo ? el('div', 'empty', 'No commits yet') : '')
+    const text = !repo
+      ? ''
+      : !search
+        ? 'No commits yet'
+        : search.pending
+          ? 'Searching…'
+          : (search.error ?? `No commit or branch matches "${search.query.trim()}"`)
+    rowsEl.replaceChildren(text ? el('div', 'empty', text) : '')
   } else {
     rowsEl.replaceChildren(
       ...rows.map((commit, row) =>
-        commit === wip ? renderWipRow(commit, graphWidth) : renderRow(commit, graphWidth, layout.colors[row])
+        commit.hash === WORKTREE ? renderWipRow(commit, graphWidth) : renderRow(commit, graphWidth, layout.colors[row])
       )
     )
   }
+  if (search?.truncated && rows.length > 0) rowsEl.append(el('div', 'empty', 'Only the newest matches are listed: add a word to narrow it.'))
   placeDetails()
 }
 
@@ -436,7 +590,7 @@ function drawGraph(): void {
   const y = (row: number) => row * ROW_H + ROW_H / 2 + (open >= 0 && row > open ? extra : 0)
 
   graphEl.setAttribute('width', String(graphWidth))
-  graphEl.setAttribute('height', String(rows.length * ROW_H + extra + (hasMore ? ROW_H : 0)))
+  graphEl.setAttribute('height', String(rows.length * ROW_H + extra + (hasMore && !search ? ROW_H : 0)))
   // Rows that are not commits of the history hang from it on a dashed line.
   const aside = rows.map((c) => c.hash === WORKTREE || c.refs[0]?.kind === 'stash')
   const paths = layout.edges.map((edge) => {
@@ -481,8 +635,10 @@ function renderRow(commit: Commit, indent: number, color: number): HTMLElement {
   row.setAttribute('aria-selected', String(commit.hash === selected))
   row.title = `${isStash ? commit.refs[0].name : commit.shortHash} · ${commit.author} · ${new Date(commit.authoredAt).toLocaleString()}\n${commit.subject}${isStash ? '\nStashed changes: right-click to apply, pop or drop' : ''}`
   row.append(...renderRefs(commit.refs, color))
+  row.append(fill(el('span', 'subject'), commit.subject))
+  // The words matched in the body, not the subject: show the line that has them.
+  if (commit.excerpt) row.append(fill(el('span', 'excerpt'), commit.excerpt))
   row.append(
-    el('span', 'subject', commit.subject),
     el('span', 'author', commit.author),
     el('span', 'date', shortAge(commit.authoredAt)),
     el('span', 'hash', commit.shortHash)
@@ -519,9 +675,11 @@ function renderRefs(refs: Ref[], color: number): HTMLElement[] {
     const node = el('span', `ref ${cls}`)
     badgeRefs.set(node, { ref, remotes: remoteNames })
     node.style.color = laneColor(color)
-    node.title = [ref.name, ...remoteNames.map((r) => `${r}/${ref.name}`)].join(', ')
-    node.append(el('span', 'name', label))
-    for (const remote of remoteNames) node.append(el('span', 'remote', remote))
+    // Hidden remote branches still reach the menu (push goes to them), just not the badge.
+    const shown = showRemotes ? remoteNames : []
+    node.title = [ref.name, ...shown.map((r) => `${r}/${ref.name}`)].join(', ')
+    node.append(fill(el('span', 'name'), label))
+    for (const remote of shown) node.append(el('span', 'remote', remote))
     badges.push(node)
   }
   for (const ref of refs) {
@@ -533,7 +691,7 @@ function renderRefs(refs: Ref[], color: number): HTMLElement[] {
       badge(ref, 'head', 'HEAD')
     }
   }
-  for (const ref of remotes) if (!absorbed.has(ref)) badge(ref, 'remote-only', ref.name)
+  if (showRemotes) for (const ref of remotes) if (!absorbed.has(ref)) badge(ref, 'remote-only', ref.name)
   for (const ref of refs) if (ref.kind === 'tag') badge(ref, 'tag', ref.name)
   for (const ref of refs) if (ref.kind === 'stash') badge(ref, 'stash', ref.name)
   return badges
@@ -756,7 +914,7 @@ function renderDetails(d: CommitDetails): void {
     if (stash.base) field('Made on', parentLink(stash.base))
     if (stash.branch) field('Branch', el('span', '', stash.branch))
     field('Date', el('span', '', fullDate(stash.createdAt)))
-    info.append(meta, el('pre', 'details-message', stash.message))
+    info.append(meta, fill(el('pre', 'details-message'), stash.message))
   } else {
     field('Commit', el('span', 'mono', d.hash))
     if (d.parents.length > 0) field(d.parents.length > 1 ? 'Parents' : 'Parent', ...d.parents.map(parentLink))
@@ -764,7 +922,7 @@ function renderDetails(d: CommitDetails): void {
     field('Author Date', el('span', '', fullDate(d.authoredAt)))
     field('Committer', ...person(d.committer, d.committerEmail))
     field('Committer Date', el('span', '', fullDate(d.committedAt)))
-    info.append(meta, el('pre', 'details-message', d.message))
+    info.append(meta, fill(el('pre', 'details-message'), d.message))
   }
 
   const grid = el('div', 'details-grid')
@@ -956,6 +1114,7 @@ new ResizeObserver(() => {
 }).observe(detailsEl)
 
 function maybeLoadMore(): void {
+  if (search) return // the list is the search's, not a page of the graph
   if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - ROW_H * 10) void loadMore()
 }
 
@@ -971,7 +1130,7 @@ rowsEl.addEventListener('contextmenu', (event) => {
   const target = event.target as Element
   const row = target.closest<HTMLElement>('.row')
   const hash = row?.dataset.hash
-  const commit = commits.find((c) => c.hash === hash)
+  const commit = commitOf(hash)
   const stash = stashOf(hash)
   if (!row || !(commit || stash || hash === WORKTREE)) return
   event.preventDefault()
@@ -988,7 +1147,7 @@ rowsEl.addEventListener('contextmenu', (event) => {
 
 /** The selected commit's menu, opened from the keyboard or the details' ⋯ button. */
 function openSelectedMenu(anchor?: Element): void {
-  const commit = commits.find((c) => c.hash === selected)
+  const commit = commitOf(selected)
   const stash = stashOf(selected)
   const row = selected ? rowOf(selected) : null
   if (!row) return
@@ -1019,6 +1178,65 @@ listEl.addEventListener('keydown', (event) => {
   const next = Math.min(rows.length - 1, Math.max(0, index + (event.key === 'ArrowDown' ? 1 : -1)))
   if (!rows[next]) return
   reveal(rows[next].hash)
+})
+
+searchEl.append(icon(ICONS.search))
+optionsEl.append(icon(ICONS.options))
+searchClearEl.append(icon(ICONS.close))
+optionsEl.classList.toggle('active', !showRemotes)
+tooltip(searchEl, () => (searchBoxEl.hidden ? { label: search ? `Searching "${search.query.trim()}"` : 'Search commits and branches' } : null))
+tooltip(optionsEl, () => ({ label: showRemotes ? 'View options' : 'View options: remote branches are hidden' }))
+
+searchEl.addEventListener('click', () => (searchBoxEl.hidden ? openSearch() : closeSearch()))
+searchInputEl.addEventListener('input', () => setQuery(searchInputEl.value))
+searchClearEl.addEventListener('click', () => {
+  searchInputEl.value = ''
+  setQuery('')
+  searchInputEl.focus()
+})
+searchBoxEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    // First Escape clears the words, the next closes the box.
+    event.preventDefault()
+    event.stopPropagation()
+    if (searchInputEl.value !== '') {
+      searchInputEl.value = ''
+      setQuery('')
+    } else {
+      closeSearch()
+      searchEl.focus()
+    }
+  } else if (event.key === 'Enter' || event.key === 'ArrowDown') {
+    // Into the results.
+    event.preventDefault()
+    if (rows[0]) {
+      listEl.focus()
+      reveal(rows[0].hash)
+    }
+  }
+})
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+    event.preventDefault()
+    openSearch()
+  }
+})
+
+optionsEl.addEventListener('click', () => {
+  const box = optionsEl.getBoundingClientRect()
+  openMenu(
+    [
+      { heading: 'View' },
+      {
+        label: 'Show remote branches',
+        checked: showRemotes,
+        hint: showRemotes ? undefined : 'off',
+        run: () => setShowRemotes(!showRemotes)
+      }
+    ],
+    { x: box.right - 200, y: box.bottom + 4 },
+    { below: true, returnFocus: optionsEl }
+  )
 })
 
 document.addEventListener('keydown', (event) => {

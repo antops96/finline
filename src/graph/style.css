@@ -154,7 +154,13 @@ button {
   stroke-linejoin: round;
 }
 
-.loading .icon svg {
+/* A header button whose setting is not the default: a search is on, remote branches are hidden. */
+.icon.active {
+  color: var(--orca-primary, #3b82f6);
+  background: color-mix(in srgb, var(--orca-primary, #3b82f6) 14%, transparent);
+}
+
+.loading #refresh svg {
   animation: spin 0.8s linear infinite;
 }
 
@@ -1005,6 +1011,56 @@ button.tree-row:hover .name {
 .menu-hint {
   color: var(--muted);
   font-size: 11px;
+}
+
+/* Search field, dropping down under the header's lens. In the flow, so it never covers results. */
+.search-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  animation: fade-up 160ms var(--ease-out) both;
+}
+
+.search-bar .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.search-count:empty {
+  display: none;
+}
+
+/* The searched words, in a row, a badge or the commit message. */
+mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, #f59e0b 45%, transparent);
+  color: inherit;
+}
+
+/* The subject keeps its own width; the body line that matched takes what is left. */
+.subject:has(+ .excerpt) {
+  flex: 0 1 auto;
+}
+
+.excerpt {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .menu-separator {

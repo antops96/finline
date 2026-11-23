@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { access, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { uncPath, WSL_EXE, withWslEnv, wslGitArgs, wslTarget, type WslTarget } from './wsl.ts'
+import { excerptOf, hasAllTerms } from './search.ts'
 import { WORKTREE_REV } from './ticket.ts'
 import type {
   Commit,
@@ -358,31 +359,20 @@ export function parseRefs(decorations: string, remotes: readonly string[]): Ref[
   })
 }
 
-export async function readCommits(
-  cwd: string,
-  opts: { skip: number; limit: number; remotes: readonly string[] },
-  signal?: AbortSignal
-): Promise<Commit[]> {
-  let out: string
-  try {
-    out = await git(
-      cwd,
-      // Stashes are listed apart (readStashes): from `--all` only the newest would show, as a
-      // merge with its helper commits.
-      ['log', '--exclude=refs/stash', '--all', '--topo-order', `--skip=${opts.skip}`, `--max-count=${opts.limit}`, `--format=${FORMAT}`],
-      signal
-    )
-  } catch (error) {
-    // A repo with no commits yet has nothing to log.
-    if (/does not have any commits|bad default revision/i.test((error as Error).message)) return []
-    throw error
-  }
+/**
+ * Which refs a log walks from. Stashes are listed apart (readStashes): from `--all` only the
+ * newest would show, as a merge with its helper commits. Without remote branches, what only
+ * they reach is left out.
+ */
+const logScope = (showRemotes: boolean) => ['--exclude=refs/stash', ...(showRemotes ? [] : ['--exclude=refs/remotes/*']), '--all']
+
+function parseLog(out: string, remotes: readonly string[]): (Commit & { body: string })[] {
   return out
     .split(RECORD)
     .map((record) => record.replace(/^\r?\n/, ''))
     .filter((record) => record.length > 0)
     .map((record) => {
-      const [hash, shortHash, parents, author, at, refs, subject] = record.split(FIELD)
+      const [hash, shortHash, parents, author, at, refs, subject, ...body] = record.split(FIELD)
       return {
         hash,
         shortHash,
@@ -390,9 +380,65 @@ export async function readCommits(
         author,
         authoredAt: Number(at) * 1000,
         subject,
-        refs: parseRefs(refs, opts.remotes)
+        refs: parseRefs(refs, remotes),
+        body: body.join(FIELD)
       }
     })
+}
+
+const SEARCH_FORMAT = ['%H', '%h', '%P', '%an', '%at', '%D', '%s', '%b'].join('%x1f') + '%x1e'
+
+/**
+ * Commits that have every term in their message, or that a branch or tag having every term
+ * points at; newest first, at most `limit`. A match in the body only comes with its line.
+ */
+export async function searchCommits(
+  cwd: string,
+  terms: readonly string[],
+  opts: { limit: number; remotes: readonly string[]; showRemotes?: boolean },
+  signal?: AbortSignal
+): Promise<{ commits: Commit[]; truncated: boolean }> {
+  if (terms.length === 0) return { commits: [], truncated: false }
+  const scope = logScope(opts.showRemotes ?? true)
+  const [byMessage, decorated] = await Promise.all([
+    git(
+      cwd,
+      // -F: the words are text, not patterns. --all-match: every word, not any.
+      ['log', ...scope, '-i', '-F', '--all-match', ...terms.map((term) => `--grep=${term}`), `--max-count=${opts.limit + 1}`, `--format=${SEARCH_FORMAT}`],
+      signal
+    ).catch(noCommits),
+    git(cwd, ['log', ...scope, '--simplify-by-decoration', `--format=${FORMAT}`], signal).catch(noCommits)
+  ])
+  const found = new Map<string, Commit>()
+  for (const { body, ...commit } of parseLog(byMessage, opts.remotes)) {
+    const excerpt = hasAllTerms(commit.subject, terms) ? null : excerptOf(body, terms)
+    found.set(commit.hash, excerpt ? { ...commit, excerpt } : commit)
+  }
+  for (const { body: _, ...commit } of parseLog(decorated, opts.remotes)) {
+    const names = commit.refs.filter((ref) => ref.kind !== 'detached' && (opts.showRemotes !== false || ref.kind !== 'remote'))
+    if (!found.has(commit.hash) && names.some((ref) => hasAllTerms(ref.name, terms))) found.set(commit.hash, commit)
+  }
+  const commits = [...found.values()].sort((a, b) => b.authoredAt - a.authoredAt)
+  return { commits: commits.slice(0, opts.limit), truncated: commits.length > opts.limit }
+}
+
+/** A repo with no commits yet has nothing to log. */
+function noCommits(error: Error): string {
+  if (/does not have any commits|bad default revision/i.test(error.message)) return ''
+  throw error
+}
+
+export async function readCommits(
+  cwd: string,
+  opts: { skip: number; limit: number; remotes: readonly string[]; showRemotes?: boolean },
+  signal?: AbortSignal
+): Promise<Commit[]> {
+  const out = await git(
+    cwd,
+    ['log', ...logScope(opts.showRemotes ?? true), '--topo-order', `--skip=${opts.skip}`, `--max-count=${opts.limit}`, `--format=${FORMAT}`],
+    signal
+  ).catch(noCommits)
+  return parseLog(out, opts.remotes).map(({ body: _, ...commit }) => commit)
 }
 
 // hash, parents, author name/email/time, committer name/email/time, then the raw message last

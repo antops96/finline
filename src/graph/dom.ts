@@ -32,6 +32,8 @@ export const ICONS = {
   push: 'M8 13.5v-9M4.5 8L8 4.5 11.5 8',
   warning: 'M8 2.5l6 11H2zM8 7v3M8 12h.01',
   check: 'M3.5 8.5l3 3 6-7',
+  search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM10.6 10.6L14 14',
+  options: 'M2.5 4.5h11M4.5 8h7M6.5 11.5h3',
   switch: 'M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13'
 }
 

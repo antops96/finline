@@ -16,12 +16,19 @@
         </svg>
       </button>
       <button class="icon" id="switch-repo" type="button" title="Change repository" aria-label="Change repository" hidden></button>
+      <button class="icon" id="search" type="button" aria-label="Search commits and branches" aria-controls="search-box" aria-expanded="false"></button>
+      <button class="icon" id="options" type="button" aria-label="View options" aria-haspopup="menu"></button>
       <button class="icon" id="refresh" type="button" aria-label="Refresh">
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" />
         </svg>
       </button>
     </header>
+    <div class="search-bar" id="search-box" role="search" aria-label="Search commits and branches" hidden>
+      <input class="input" id="search-input" type="text" placeholder="Search subjects, messages, branches" spellcheck="false" autocomplete="off" />
+      <span class="search-count" id="search-count" aria-live="polite"></span>
+      <button class="icon" id="search-clear" type="button" aria-label="Clear the search" hidden></button>
+    </div>
     <section class="banner" id="banner" role="status" hidden></section>
     <section class="message" id="message" hidden></section>
     <main class="list" id="list" tabindex="0" aria-label="Commits">

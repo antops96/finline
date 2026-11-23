@@ -167,6 +167,7 @@ export function openMenu(entries: MenuEntry[], at: { x: number; y: number }, { r
     if (moving()) menu.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90 }).onfinish = done
     else done()
     returnFocus?.focus({ preventScroll: true })
+    hideTip() // focus coming back is not a person reaching for the control
     onClose?.()
   }
   closeOpenMenu = close

@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePatch } from './diff.ts'
-import { git, parseDiffTree, parseRefList, parseStatus, readCommitDetails, readFileDiff, readCommits, readRefList, readStashes, readUntrackedOfStash, readWorktreeChanges, stashAt } from './git.ts'
+import { git, parseDiffTree, parseRefList, parseStatus, readCommitDetails, readFileDiff, readCommits, readRefList, readStashes, readUntrackedOfStash, readWorktreeChanges, searchCommits, stashAt } from './git.ts'
 
 const Z = '0000000000000000000000000000000000000000'
 const raw = (status: string) => `:100644 100644 ${Z} ${Z} ${status}`
@@ -368,6 +368,55 @@ test('stashes are listed apart from the graph, with their base and untracked fil
     // The graph has the real commit only: no stash, no helper commits.
     assert.deepEqual((await readCommits(dir, { skip: 0, limit: 10, remotes: [] })).map((c) => c.hash), [head])
     assert.equal((await readStashes(dir, 1)).length, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('search finds commits by subject, body and branch name, and remote branches can be left out', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'finline-search-'))
+  try {
+    const run = (...args: string[]) => git(dir, args)
+    const commit = async (file: string, ...message: string[]) => {
+      await writeFile(join(dir, file), `${file}\n`)
+      await run('add', '.')
+      await run('commit', '-q', ...message.flatMap((m) => ['-m', m]))
+      return (await run('rev-parse', 'HEAD')).trim()
+    }
+    await run('init', '-q', '-b', 'main')
+    await run('config', 'user.email', 'test@example.com')
+    await run('config', 'user.name', 'Test')
+    const first = await commit('a', 'Add the Parser')
+    const second = await commit('b', 'Tidy up', 'Nothing much.\nThe parser keeps its lanes straight.')
+    await run('branch', 'feature/parser-rewrite')
+    const third = await commit('c', 'Unrelated work')
+    await run('switch', '-q', '-c', 'side', first)
+    const away = await commit('d', 'Parser only on the remote')
+    await run('update-ref', 'refs/remotes/origin/far', away)
+    await run('switch', '-q', 'main')
+    await run('branch', '-q', '-D', 'side')
+    const opts = { limit: 10, remotes: ['origin'] }
+    const hashes = async (query: string[], more = {}) => (await searchCommits(dir, query, { ...opts, ...more })).commits.map((c) => c.hash).sort()
+
+    assert.deepEqual(await hashes(['parser']), [first, second, away].sort())
+    assert.deepEqual(await hashes(['parser'], { showRemotes: false }), [first, second].sort())
+    assert.deepEqual(await hashes(['parser', 'lanes']), [second])
+    assert.deepEqual(await hashes(['rewrite']), [second]) // the branch points at it
+    assert.deepEqual(await hashes(['main']), [third])
+    assert.deepEqual(await hashes(['far']), [away])
+    assert.deepEqual(await hashes(['far'], { showRemotes: false }), [])
+    assert.deepEqual(await hashes(['.*']), []) // text, not a pattern
+    assert.deepEqual(await hashes([]), [])
+    const found = (await searchCommits(dir, ['lanes'], opts)).commits[0]
+    assert.equal(found.excerpt, 'The parser keeps its lanes straight.')
+    assert.equal((await searchCommits(dir, ['add'], opts)).commits[0].excerpt, undefined)
+    assert.deepEqual(await searchCommits(dir, ['parser'], { ...opts, limit: 1 }).then((r) => [r.commits.length, r.truncated]), [1, true])
+
+    const all = await readCommits(dir, { skip: 0, limit: 10, remotes: ['origin'] })
+    const local = await readCommits(dir, { skip: 0, limit: 10, remotes: ['origin'], showRemotes: false })
+    assert.ok(all.some((c) => c.hash === away))
+    assert.ok(!local.some((c) => c.hash === away))
+    assert.equal(local.length, 3)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

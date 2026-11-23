@@ -23,8 +23,10 @@ import {
   registerRepoHost,
   remoteNames,
   runGit,
+  searchCommits,
   stashAt
 } from './git'
+import { searchTerms } from './search.ts'
 import { getSshTargetMap, resolveRemoteWorkspace, selectRemoteWorkspace } from './remote'
 import { isRev, isSafeRelPath } from './ticket.ts'
 import { writeTicket } from './ticket-store.ts'
@@ -38,6 +40,7 @@ import type {
   GraphLoad,
   OpenResult,
   RefsLoad,
+  SearchLoad,
   StatusLoad,
   WorktreeLoad
 } from './types'
@@ -55,6 +58,7 @@ const MAX_FILES = 2000
 // The branch switcher filters by name; past this many tags it says the list was cut.
 const MAX_TAGS = 500
 const MAX_STASHES = 100
+const MAX_FOUND = 500
 const HASH = /^[0-9a-f]{4,64}$/i
 // Paths under the git dir whose change means the graph may have changed.
 // Stopped merges, rebases and cherry-picks leave marker files there too.
@@ -321,7 +325,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
   }
 
-  orca.panels.handle('graph.load', async ({ limit, skip, preferredPath }, { signal }): Promise<GraphLoad> => {
+  orca.panels.handle('graph.load', async ({ limit, skip, preferredPath, remotes: showRemotes }, { signal }): Promise<GraphLoad> => {
     const resolved = await resolveRepo(orca, preferredPath)
     if (!resolved.ok) return resolved
     const max = Math.min(Math.max(1, limit ?? DEFAULT_LIMIT), MAX_LIMIT)
@@ -333,7 +337,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         currentBranch(resolved.path),
         readStashes(resolved.path, MAX_STASHES, signal),
         // One extra tells us whether another page exists.
-        readCommits(resolved.path, { skip: from, limit: max + 1, remotes }, signal)
+        readCommits(resolved.path, { skip: from, limit: max + 1, remotes, showRemotes: showRemotes !== false }, signal)
       ])
       const watching = await watchRepo(resolved.path)
       served.add(resolved.path)
@@ -349,6 +353,17 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
     } catch (error) {
       return { ok: false, reason: 'git-failed', message: (error as Error).message }
+    }
+  })
+
+  orca.panels.handle('graph.search', async ({ path, query, remotes: showRemotes }, { signal }): Promise<SearchLoad> => {
+    if (!served.has(path)) return { ok: false, message: 'Unknown repository; reload the graph.' }
+    if (typeof query !== 'string') return { ok: false, message: 'Not a search.' }
+    try {
+      const remotes = await remoteNames(path)
+      return { ok: true, ...(await searchCommits(path, searchTerms(query), { limit: MAX_FOUND, remotes, showRemotes: showRemotes !== false }, signal)) }
+    } catch (error) {
+      return { ok: false, message: (error as Error).message }
     }
   })
 
