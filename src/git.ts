@@ -5,7 +5,19 @@ import { execFile } from 'node:child_process'
 import { access, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { uncPath, WSL_EXE, withWslEnv, wslGitArgs, wslTarget, type WslTarget } from './wsl.ts'
-import type { Commit, CommitDetails, FileChange, FileStatus, Operation, Ref, RepoStatus, WorktreeChanges } from './types'
+import { WORKTREE_REV } from './ticket.ts'
+import type {
+  Commit,
+  CommitDetails,
+  DiffTarget,
+  FileChange,
+  FileDiff,
+  FileStatus,
+  Operation,
+  Ref,
+  RepoStatus,
+  WorktreeChanges
+} from './types'
 
 const FIELD = '\x1f'
 const RECORD = '\x1e'
@@ -410,6 +422,82 @@ export async function readWorktreeChanges(cwd: string, maxFiles: number, signal?
     files: all.slice(0, maxFiles),
     filesTruncated: files.length + untracked.length > maxFiles
   }
+}
+
+/** A patch is sent whole up to this many characters: well under the 1 MiB answer cap as JSON. */
+export const MAX_PATCH = 400_000
+// Context lines that take in any whole file, so both sides can be read top to bottom.
+const WHOLE_FILE = 1_000_000
+// An untracked file bigger than this is not read: it is reported like a binary one.
+const MAX_UNTRACKED_BYTES = 8 * 1024 * 1024
+
+/** A patch that adds every line of an untracked file, which git itself has no diff for. */
+async function untrackedPatch(path: string, file: string): Promise<string> {
+  const binary = `Binary files /dev/null and b/${file} differ\n`
+  const { size } = await stat(path)
+  if (size > MAX_UNTRACKED_BYTES) return binary
+  const data = await readFile(path)
+  if (data.includes(0)) return binary
+  const lines = data.toString('utf8').split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  if (lines.length === 0) return ''
+  return `--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}\n`
+}
+
+/**
+ * One file's diff: a commit against its first parent (nothing, for a root commit), or the working
+ * tree against HEAD. `target.file` and `target.from` are relative to the repository root, as the
+ * file lists give them. The whole file is sent as context; when that is over `maxPatch`, only the
+ * changed regions are, and past that the patch is cut.
+ */
+export async function readFileDiff(
+  cwd: string,
+  target: DiffTarget,
+  signal?: AbortSignal,
+  maxPatch = MAX_PATCH
+): Promise<FileDiff> {
+  const { rev, file, from } = target
+  // Pathspecs are relative to cwd, which may sit below the repository root.
+  const prefix = (await git(cwd, ['rev-parse', '--show-prefix'], signal)).trim()
+  const up = prefix.split('/').filter(Boolean).map(() => '../').join('')
+  const paths = [...(from ? [up + from] : []), up + file]
+  // --literal-pathspecs: a name like `[id].tsx` is that file, not a pattern.
+  const options = (context: number) => ['-M', '--no-ext-diff', `--unified=${context}`]
+  let oldRev: string | null
+  let newRev: string | null
+  let command: (context: number) => string[]
+  if (rev === WORKTREE_REV) {
+    oldRev = (await git(cwd, ['rev-parse', '--verify', 'HEAD'], signal)).trim()
+    newRev = null
+    command = (context) => ['--literal-pathspecs', 'diff', 'HEAD', ...options(context), '--', ...paths]
+  } else {
+    const out = await git(cwd, ['show', '-s', '--no-show-signature', '--format=%H %P', rev], signal)
+    const [full, parent] = out.trim().split(' ')
+    oldRev = parent ?? null
+    newRev = full
+    const range = parent ? [parent, full] : ['--root', full]
+    command = (context) => ['--literal-pathspecs', 'diff-tree', '-p', '--no-commit-id', ...options(context), ...range, '--', ...paths]
+  }
+
+  let patch = await git(cwd, command(WHOLE_FILE), signal)
+  let partial = false
+  if (patch === '' && rev === WORKTREE_REV) {
+    const others = await git(cwd, ['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '--', up + file], signal)
+    if (others.trim() !== '') {
+      const top = (await git(cwd, ['rev-parse', '--show-toplevel'], signal)).trim()
+      patch = await untrackedPatch(join(await fsPath(cwd, top), file), file)
+      oldRev = null
+    }
+  } else if (patch.length > maxPatch) {
+    patch = await git(cwd, command(3), signal)
+    partial = true
+  }
+  const truncated = patch.length > maxPatch
+  if (truncated) {
+    partial = true
+    patch = patch.slice(0, patch.lastIndexOf('\n', maxPatch - 1) + 1)
+  }
+  return { file, ...(from ? { from } : {}), oldRev, newRev, patch, partial, truncated }
 }
 
 /** The worktree's own git dir (HEAD, index) and the shared one (refs, packed-refs), as `fs` paths. */

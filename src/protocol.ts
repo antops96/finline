@@ -1,5 +1,5 @@
 // Panel <-> worker contract, shared by the panel and src/worker.ts.
-import type { ActionResult, DetailsLoad, GitAction, GraphLoad, StatusLoad, WorktreeLoad } from './types'
+import type { ActionResult, DetailsLoad, DiffLoad, DiffTarget, GitAction, GraphLoad, OpenResult, StatusLoad, WorktreeLoad } from './types'
 
 declare module 'orca' {
   interface PluginRequests {
@@ -18,6 +18,10 @@ declare module 'orca' {
     'git.run': { input: { path: string; action: GitAction }; output: ActionResult }
     /** Runs a remote action in a new Orca terminal of the workspace, where git can ask for credentials. */
     'git.terminal': { input: { path: string; action: GitAction }; output: { ok: true } | { ok: false; message: string } }
+    /** Opens one file's diff in an editor tab of the workspace, through a ticket file written there. */
+    'diff.open': { input: { path: string } & DiffTarget; output: OpenResult }
+    /** One file's diff, for the diff editor: a commit against its first parent, or the working tree against HEAD. */
+    'file.diff': { input: { path: string } & DiffTarget; output: DiffLoad }
   }
   interface PluginPanelEvents {
     /** Posted when HEAD, refs or the index of the watched repo change. */

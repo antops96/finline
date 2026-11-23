@@ -26,6 +26,16 @@
         "entry": "src/graph/index.html",
         "ui": "html"
       }
+    ],
+    "customEditors": [
+      {
+        "id": "diff",
+        "title": "Finline diff",
+        "extensions": [
+          ".finline-diff"
+        ],
+        "entry": "src/diff/index.html"
+      }
     ]
   },
   "capabilities": [
@@ -37,6 +47,9 @@
     },
     {
       "kind": "terminal:send"
+    },
+    {
+      "kind": "workspace:write"
     }
   ],
   "cover": {

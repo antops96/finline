@@ -14,6 +14,7 @@ import {
   gitVersion,
   readCommitDetails,
   readCommits,
+  readFileDiff,
   readStatus,
   readWorktreeChanges,
   registerRepoHost,
@@ -21,8 +22,20 @@ import {
   runGit
 } from './git'
 import { getSshTargetMap, resolveRemoteWorkspace, selectRemoteWorkspace } from './remote'
-import { wslFingerprint, wslLookupError, wslTarget, type WslTarget } from './wsl.ts'
-import type { ActionResult, Candidate, DetailsLoad, GraphLoad, StatusLoad, WorktreeLoad } from './types'
+import { isRev, isSafeRelPath } from './ticket.ts'
+import { writeTicket } from './ticket-store.ts'
+import { uncPath, wslFingerprint, wslLookupError, wslTarget, type WslTarget } from './wsl.ts'
+import type {
+  ActionResult,
+  Candidate,
+  DetailsLoad,
+  DiffLoad,
+  DiffTarget,
+  GraphLoad,
+  OpenResult,
+  StatusLoad,
+  WorktreeLoad
+} from './types'
 
 const DEFAULT_LIMIT = 200
 // About 250 bytes of JSON per commit keeps a full page well under the 1 MiB answer cap.
@@ -182,8 +195,9 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
 let watcher: FSWatcher | null = null
 let worktreeWatcher: FSWatcher | null = null
 let poller: ReturnType<typeof setInterval> | null = null
-// The main worktree holds the git dir; its changes are the other watcher's business.
-const IN_GIT_DIR = /^\.git([\\/]|$)/
+// The main worktree holds the git dir; its changes are the other watcher's business. Diff
+// tickets (.finline/) are ours and git never lists them.
+const IN_GIT_DIR = /^\.(git|finline)([\\/]|$)/
 
 export default function activate(orca: OrcaWorkerApi): void {
   let watchedPath: string | null = null
@@ -397,6 +411,63 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!HASH.test(hash)) return { ok: false, message: `Not a commit hash: ${hash}` }
     try {
       return { ok: true, details: await readCommitDetails(path, hash, MAX_FILES, signal) }
+    } catch (error) {
+      return { ok: false, message: (error as Error).message }
+    }
+  })
+
+  /** What is wrong with a diff request's fields, or null: they end up in git arguments and paths. */
+  function badTarget({ rev, file, from }: DiffTarget): string | null {
+    if (typeof rev !== 'string' || !isRev(rev)) return `Not a commit hash: ${rev}`
+    if (typeof file !== 'string' || !isSafeRelPath(file)) return `Not a file of the repository: ${file}`
+    if (from !== undefined && (typeof from !== 'string' || !isSafeRelPath(from))) return `Not a file of the repository: ${from}`
+    return null
+  }
+
+  /**
+   * A diff tab can outlive the worker (Orca restores tabs) and ask before any panel has loaded
+   * the graph: a path that is one of Orca's local workspaces is as good as one graph.load served.
+   */
+  async function ensureServed(path: string): Promise<boolean> {
+    if (served.has(path)) return true
+    const { workspaces } = await orca.host.call('workspace.list', {})
+    const workspace = workspaces.find((w) => isLocal(w.hostId) && samePath(w.path, path))
+    if (!workspace) return false
+    registerRepoHost(path, null)
+    workspaceIdByPath.set(path, workspace.id)
+    served.add(path)
+    return true
+  }
+
+  orca.panels.handle('file.diff', async ({ path, rev, file, from }, { signal }): Promise<DiffLoad> => {
+    const target: DiffTarget = from === undefined ? { rev, file } : { rev, file, from }
+    const bad = badTarget(target)
+    if (bad) return { ok: false, message: bad }
+    if (!(await ensureServed(path))) return { ok: false, message: 'Unknown repository; open the Finline panel on it and retry.' }
+    try {
+      return { ok: true, diff: await readFileDiff(path, target, signal) }
+    } catch (error) {
+      return { ok: false, message: (error as Error).message }
+    }
+  })
+
+  // Orca has no API for a diff, and opens only files inside a workspace: write a ticket there
+  // and open it, so the diff editor registered for its extension shows in an editor tab.
+  orca.panels.handle('diff.open', async ({ path, rev, file, from }): Promise<OpenResult> => {
+    if (!served.has(path)) return { ok: false, message: 'Unknown repository; reload the graph.' }
+    const bad = badTarget(from === undefined ? { rev, file } : { rev, file, from })
+    if (bad) return { ok: false, message: bad }
+    if (getRepoHost(path)) return { ok: false, message: 'Diffs are not available for remote (SSH) repositories yet.' }
+    try {
+      const { workspaces } = await orca.host.call('workspace.list', {})
+      const workspaceId = workspaces.find((w) => samePath(w.path, path))?.id ?? workspaceIdByPath.get(path)
+      if (!workspaceId) return { ok: false, message: 'No Orca workspace has this repository open.' }
+      const wsl = await wslTarget(path)
+      const root = wsl ? uncPath(wsl.distro, wsl.path) : path
+      const { commonDir } = await gitDirs(path)
+      const ticket = await writeTicket(root, commonDir, { v: 1, repo: path, rev, file, ...(from === undefined ? {} : { from }) })
+      await orca.host.call('editor.open', { workspaceId, path: ticket })
+      return { ok: true }
     } catch (error) {
       return { ok: false, message: (error as Error).message }
     }
