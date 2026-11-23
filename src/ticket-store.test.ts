@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { dirname } from 'node:path'
 import { parseTicket, ticketPath } from './ticket.ts'
 import { writeTicket } from './ticket-store.ts'
 
@@ -58,5 +59,61 @@ test('keeps only the newest tickets and removes emptied folders', async () => {
     assert.equal((await readdir(join(root, '.finline'))).length, 2)
   } finally {
     await done()
+  }
+})
+
+// A cloned repository can carry `.finline` (or anything under it) as a symbolic link: following
+// it would write, and later delete, files outside the workspace.
+test('refuses a ticket folder that is a symbolic link', async () => {
+  const { root, common, done } = await scratch()
+  const outside = await mkdtemp(join(tmpdir(), 'finline-outside-'))
+  try {
+    await symlink(outside, join(root, '.finline'))
+    await assert.rejects(writeTicket(root, common, { v: 1, repo: root, rev: HASH, file: 'a.ts' }), /symbolic link/)
+    assert.deepEqual(await readdir(outside), [])
+  } finally {
+    await done()
+    await rm(outside, { recursive: true, force: true })
+  }
+})
+
+test('refuses a ticket subfolder or a ticket that is a symbolic link', async () => {
+  const { root, common, done } = await scratch()
+  const outside = await mkdtemp(join(tmpdir(), 'finline-outside-'))
+  try {
+    const relative = ticketPath(HASH, 'a.ts')
+    await mkdir(join(root, '.finline'))
+    await symlink(outside, join(root, dirname(relative)))
+    await assert.rejects(writeTicket(root, common, { v: 1, repo: root, rev: HASH, file: 'a.ts' }), /symbolic link/)
+    assert.deepEqual(await readdir(outside), [])
+
+    const other = ticketPath(HASH, 'b.ts')
+    const victim = join(outside, 'victim.txt')
+    await writeFile(victim, 'keep me')
+    await mkdir(join(root, dirname(other)))
+    await symlink(victim, join(root, other))
+    await assert.rejects(writeTicket(root, common, { v: 1, repo: root, rev: HASH, file: 'b.ts' }), /symbolic link/)
+    assert.equal(await readFile(victim, 'utf8'), 'keep me')
+  } finally {
+    await done()
+    await rm(outside, { recursive: true, force: true })
+  }
+})
+
+test('pruning never follows a symbolic link', async () => {
+  const { root, common, done } = await scratch()
+  const outside = await mkdtemp(join(tmpdir(), 'finline-outside-'))
+  try {
+    await writeFile(join(outside, 'old.finline-diff'), 'x')
+    const past = new Date(Date.now() - 3_600_000)
+    await utimes(join(outside, 'old.finline-diff'), past, past)
+    await mkdir(join(root, '.finline'))
+    await symlink(outside, join(root, '.finline', 'linked'))
+    await writeTicket(root, common, { v: 1, repo: root, rev: HASH, file: 'a.ts' }, 1)
+    await writeTicket(root, common, { v: 1, repo: root, rev: HASH, file: 'b.ts' }, 1)
+    assert.deepEqual(await readdir(outside), ['old.finline-diff'])
+  } finally {
+    await done()
+    await rm(outside, { recursive: true, force: true })
   }
 })
