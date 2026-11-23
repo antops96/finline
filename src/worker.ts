@@ -175,8 +175,7 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
       idPath ? wslLookupError() : null
     ]
       .filter(Boolean)
-      .join('
-')
+      .join('\n')
   }
 }
 
