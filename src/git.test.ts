@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePatch } from './diff.ts'
-import { git, parseDiffTree, parseRefList, parseStatus, readCommitDetails, readFileDiff, readRefList, readWorktreeChanges } from './git.ts'
+import { git, parseDiffTree, parseRefList, parseStatus, readCommitDetails, readFileDiff, readCommits, readRefList, readStashes, readUntrackedOfStash, readWorktreeChanges, stashAt } from './git.ts'
 
 const Z = '0000000000000000000000000000000000000000'
 const raw = (status: string) => `:100644 100644 ${Z} ${Z} ${status}`
@@ -314,6 +314,46 @@ test('the size limit counts the bytes of the answer, not characters', async () =
     const cut = await readFileDiff(dir, { rev: head, file: 'ja.txt' }, undefined, 400)
     assert.equal(cut.truncated, true)
     assert.ok(Buffer.byteLength(JSON.stringify(cut.patch)) <= 400)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('stashes are listed apart from the graph, with their base and untracked files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'finline-stash-'))
+  try {
+    const run = (...args: string[]) => git(dir, args)
+    await run('init', '-q', '-b', 'main')
+    await run('config', 'user.email', 'test@example.com')
+    await run('config', 'user.name', 'Test')
+    await writeFile(join(dir, 'a.txt'), 'a\n')
+    await run('add', '.')
+    await run('commit', '-q', '-m', 'init')
+    const head = (await run('rev-parse', 'HEAD')).trim()
+    assert.deepEqual(await readStashes(dir, 10), [])
+
+    await writeFile(join(dir, 'a.txt'), 'a\nb\n')
+    await run('stash', 'push', '-q')
+    await writeFile(join(dir, 'a.txt'), 'a\nc\n')
+    await writeFile(join(dir, 'new.txt'), 'n\n')
+    await run('stash', 'push', '-q', '--include-untracked', '-m', 'with: a colon')
+
+    const stashes = await readStashes(dir, 10)
+    assert.deepEqual(
+      stashes.map((s) => [s.index, s.message, s.branch, s.base, Boolean(s.untracked)]),
+      [
+        [0, 'with: a colon', 'main', head, true],
+        [1, 'WIP on main', 'main', head, false]
+      ]
+    )
+    assert.equal(await stashAt(dir, 1), stashes[1].hash)
+    assert.equal(await stashAt(dir, 2), null)
+    assert.deepEqual(await readUntrackedOfStash(dir, stashes[0].untracked!), [
+      { status: 'A', path: 'new.txt', added: 1, deleted: 0, untracked: true, rev: stashes[0].untracked }
+    ])
+    // The graph has the real commit only: no stash, no helper commits.
+    assert.deepEqual((await readCommits(dir, { skip: 0, limit: 10, remotes: [] })).map((c) => c.hash), [head])
+    assert.equal((await readStashes(dir, 1)).length, 1)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

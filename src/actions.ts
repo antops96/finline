@@ -16,6 +16,22 @@ export function isRefName(value: string): boolean {
   return true
 }
 
+/** A stash message: one line, no control characters. */
+export const isStashMessage = (value: string) => value.length <= 200 && !/[\x00-\x1f\x7f]/.test(value)
+
+/** The stash actions that name an existing stash by index and hash. */
+export function stashTarget(action: GitAction): { index: number; hash: string } | null {
+  switch (action.kind) {
+    case 'stashApply':
+    case 'stashPop':
+    case 'stashDrop':
+    case 'stashBranch':
+      return { index: action.index, hash: action.hash }
+    default:
+      return null
+  }
+}
+
 /** A commit hash or ref name: what merge, rebase and reset accept. */
 export const isRevision = (value: string) => isHash(value) || isRefName(value)
 
@@ -33,6 +49,10 @@ export function changesWorktree(action: GitAction): boolean {
     case 'checkoutRemote':
     case 'checkoutDetached':
     case 'checkoutTag':
+    case 'stashPush':
+    case 'stashApply':
+    case 'stashPop':
+    case 'stashBranch':
     case 'pull':
     case 'merge':
     case 'rebase':
@@ -73,6 +93,8 @@ export function buildArgs(action: GitAction, ctx: BuildContext): Built {
   const hash = (value: string) => (isHash(value) ? null : `Not a commit hash: "${value}"`)
   const remote = (value: string) => (ctx.remotes.includes(value) ? null : `No remote named "${value}"`)
   const check = (...errors: (string | null)[]) => errors.find((e) => e !== null) ?? null
+  const stash = (index: number, of: string) =>
+    Number.isInteger(index) && index >= 0 && index < 10000 ? hash(of) : `Not a stash: "${index}"`
 
   switch (action.kind) {
     case 'checkout': {
@@ -114,6 +136,22 @@ export function buildArgs(action: GitAction, ctx: BuildContext): Built {
     case 'deleteTag': {
       const error = ref(action.name, 'tag')
       return error ? bad(error) : ok('tag', '-d', action.name)
+    }
+    case 'stashPush': {
+      const message = action.message?.trim() ?? ''
+      if (!isStashMessage(message)) return bad('A stash message is one line of at most 200 characters')
+      return ok('stash', 'push', ...(action.includeUntracked ? ['--include-untracked'] : []), ...(message ? ['-m', message] : []))
+    }
+    case 'stashApply':
+    case 'stashPop':
+    case 'stashDrop': {
+      const error = stash(action.index, action.hash)
+      const command = { stashApply: 'apply', stashPop: 'pop', stashDrop: 'drop' }[action.kind]
+      return error ? bad(error) : ok('stash', command, `stash@{${action.index}}`)
+    }
+    case 'stashBranch': {
+      const error = check(ref(action.name, 'branch'), stash(action.index, action.hash))
+      return error ? bad(error) : ok('stash', 'branch', action.name, `stash@{${action.index}}`)
     }
     case 'fetch':
       return ok('fetch', '--all', '--prune')
