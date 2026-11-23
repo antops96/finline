@@ -17,10 +17,10 @@ import type {
   WorktreeChanges,
   WorktreeLoad
 } from '../types.ts'
-import { commitMenu, createToolbar, initActions, refMenu, renderBanner } from './actions.ts'
+import { commitMenu, createToolbar, initActions, initBranchSwitcher, refMenu, renderBanner } from './actions.ts'
 import { el, icon, ICONS, moving, svg } from './dom.ts'
 import { orca } from './frame.ts'
-import { toast } from './overlay.ts'
+import { toast, tooltip } from './overlay.ts'
 
 const PAGE = 200
 const ROW_H = 24
@@ -33,7 +33,8 @@ const MAX_PINS = 200
 
 const $ = <T extends Element>(id: string) => document.getElementById(id) as unknown as T
 const repoEl = $<HTMLElement>('repo')
-const branchEl = $<HTMLElement>('branch')
+const branchEl = $<HTMLButtonElement>('branch')
+const branchNameEl = $<HTMLElement>('branch-name')
 const refreshEl = $<HTMLButtonElement>('refresh')
 const switchRepoEl = $<HTMLButtonElement>('switch-repo')
 const messageEl = $<HTMLElement>('message')
@@ -319,8 +320,11 @@ const laneColor = (i: number) => `var(--lane-${i % LANE_COLORS})`
 function renderHeader(): void {
   repoEl.textContent = repo?.name ?? 'Finline'
   repoEl.title = repo?.path ?? ''
-  branchEl.hidden = !repo?.branch
-  branchEl.textContent = repo?.branch ?? ''
+  // Shown on a detached HEAD too: the dropdown is the way back to a branch.
+  branchEl.hidden = !repo
+  branchEl.classList.toggle('detached', Boolean(repo && !repo.branch))
+  branchNameEl.textContent = repo?.branch ?? 'detached'
+  branchEl.setAttribute('aria-label', repo?.branch ? `Branch ${repo.branch}: switch branch or tag` : 'HEAD is detached: switch branch or tag')
   switchRepoEl.hidden = !(repo && pickedRepo)
 }
 
@@ -956,6 +960,8 @@ document.addEventListener('keydown', (event) => {
 
 listEl.addEventListener('scroll', maybeLoadMore, { passive: true })
 refreshEl.addEventListener('click', () => void refresh())
+tooltip(refreshEl, () => ({ label: 'Reload the graph and the status' }))
+initBranchSwitcher(branchEl)
 switchRepoEl.append(icon(ICONS.switch))
 switchRepoEl.addEventListener('click', () => void unpin())
 

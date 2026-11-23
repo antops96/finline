@@ -1,10 +1,10 @@
 // Git actions from the panel: context menus for commits and refs, the fetch/pull/push toolbar,
 // the banner for a stopped merge or rebase, and the confirm → run → report flow they share.
 import { buildArgs, changesWorktree, isRefName } from '../actions.ts'
-import type { ActionResult, Commit, GitAction, Operation, Ref, RepoStatus } from '../types.ts'
+import type { ActionResult, Commit, GitAction, Operation, Ref, RefsLoad, RepoStatus } from '../types.ts'
 import { el, icon, ICONS } from './dom.ts'
 import { orca } from './frame.ts'
-import { openDialog, openMenu, toast, type DialogSpec, type MenuEntry, type MenuOptions, type Values } from './overlay.ts'
+import { openDialog, openMenu, toast, tooltip, type DialogSpec, type MenuEntry, type MenuOptions, type TipSpec, type Values } from './overlay.ts'
 
 /** What the actions need from the rest of the panel. */
 export interface ActionHost {
@@ -26,6 +26,12 @@ export function initActions(panel: ActionHost): void {
 const short = (hash: string) => hash.slice(0, 7)
 const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 const ACTION_TIMEOUT_MS = 130_000
+
+/** The command line an action runs, as the worker builds it; null for an action it would refuse. */
+function commandOf(action: GitAction, remotes: readonly string[]): string | null {
+  const built = buildArgs(action, { remotes })
+  return built.ok ? `git ${built.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}` : null
+}
 
 function setBusy(on: boolean): void {
   busy = on
@@ -160,10 +166,7 @@ async function guarded(guard: Guard): Promise<boolean> {
       fields: guard.fields,
       confirm: guard.confirm,
       danger: guard.danger,
-      preview: (v) => {
-        const built = buildArgs(guard.build(v), { remotes })
-        return built.ok ? `git ${built.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}` : null
-      }
+      preview: (v) => commandOf(guard.build(v), remotes)
     })
     if (!answer) return false
     values = answer
@@ -278,6 +281,26 @@ function rebaseFlow(onto: string, label: string, current: string): Promise<boole
     always: true,
     build: () => ({ kind: 'rebase', onto }),
     labels: () => ({ busy: `Rebasing onto ${label}…`, done: `Rebased ${current} onto ${label}` })
+  })
+}
+
+function checkoutFlow(name: string): Promise<boolean> {
+  return guarded({
+    title: `Check out ${name}`,
+    confirm: 'Check out',
+    build: () => ({ kind: 'checkout', branch: name }),
+    labels: () => ({ busy: `Checking out ${name}…`, done: `Checked out ${name}` })
+  })
+}
+
+function checkoutTagFlow(name: string): Promise<boolean> {
+  return guarded({
+    title: `Check out tag ${name}`,
+    text: 'HEAD will point at the tag\'s commit, not at a branch ("detached"). New commits here belong to no branch until you create one.',
+    confirm: 'Check out',
+    always: true,
+    build: () => ({ kind: 'checkoutTag', name }),
+    labels: () => ({ busy: `Checking out ${name}…`, done: `Checked out tag ${name}` })
   })
 }
 
@@ -491,10 +514,7 @@ function createTagFlow(commit: Commit, status: RepoStatus): Promise<boolean> {
         { kind: 'textarea', id: 'message', label: 'Message (optional: makes an annotated tag)' },
         ...(remote ? [{ kind: 'check' as const, id: 'push', label: `Push it to ${remote}`, value: false }] : [])
       ],
-      preview: (v) => {
-        const built = buildArgs({ kind: 'createTag', name: String(v.name).trim(), at: commit.hash, message: String(v.message) }, { remotes: status.remotes })
-        return built.ok ? `git ${built.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}` : null
-      }
+      preview: (v) => commandOf({ kind: 'createTag', name: String(v.name).trim(), at: commit.hash, message: String(v.message) }, status.remotes)
     })
     if (!answer) return false
     const name = String(answer.name).trim()
@@ -532,13 +552,7 @@ function localBranchEntries(name: string, twins: string[], status: RepoStatus): 
       {
         label: 'Check out',
         disabled: stopped,
-        run: () =>
-          void guarded({
-            title: `Check out ${name}`,
-            confirm: 'Check out',
-            build: () => ({ kind: 'checkout', branch: name }),
-            labels: () => ({ busy: `Checking out ${name}…`, done: `Checked out ${name}` })
-          })
+        run: () => void checkoutFlow(name)
       },
       {
         label: `Merge into ${current ?? 'current branch'}…`,
@@ -673,7 +687,11 @@ function remoteBranchEntries(fullName: string, status: RepoStatus): MenuEntry[] 
 }
 
 function tagEntries(name: string, status: RepoStatus): MenuEntry[] {
-  const entries: MenuEntry[] = [{ heading: `tag ${name}` }]
+  const entries: MenuEntry[] = [
+    { heading: `tag ${name}` },
+    { label: 'Check out…', disabled: stoppedOperation(), run: () => void checkoutTagFlow(name) },
+    'separator'
+  ]
   for (const remote of status.remotes) {
     entries.push({
       label: `Push to ${remote}`,
@@ -709,6 +727,81 @@ function tagEntries(name: string, status: RepoStatus): MenuEntry[] {
   return entries
 }
 
+// ---- Branch switcher -------------------------------------------------------------------------
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path
+/** Below this many branches and tags the list is short enough to read without a filter. */
+const FILTER_FROM = 8
+
+/**
+ * Makes the header's branch chip a dropdown of local branches and tags; choosing one checks it
+ * out with `git switch`. The list is read when it opens.
+ */
+export function initBranchSwitcher(button: HTMLButtonElement): void {
+  let closedAt = 0
+  let opening = false
+  tooltip(button, () =>
+    button.getAttribute('aria-expanded') === 'true' ? null : { label: 'Switch to another branch or tag', command: 'git switch <branch>' }
+  )
+  button.addEventListener('click', async () => {
+    // The pointer press that lands on the chip has just closed the menu: do not reopen it.
+    if (opening || performance.now() - closedAt < 250) return
+    const path = host.repoPath()
+    if (!path) return
+    opening = true
+    let load: RefsLoad
+    try {
+      load = await orca.plugin.request('refs.list', { path })
+    } catch (error) {
+      load = { ok: false, message: (error as Error).message }
+    } finally {
+      opening = false
+    }
+    if (!load.ok) {
+      toast({ tone: 'error', title: 'Could not list the branches', detail: load.message })
+      return
+    }
+    if (host.repoPath() !== path) return
+    const status = host.status()
+    const current = status?.branch ?? null
+    const blocked = stoppedOperation() || (busy ? 'Another git action is still running' : false)
+    const unsafe = (name: string) => (isRefName(name) ? false : 'Finline cannot pass this name to git')
+    const { branches, tags, tagsTruncated } = load.refs
+    const entries: MenuEntry[] = [{ heading: 'Branches' }]
+    for (const { name, worktree } of branches) {
+      const isCurrent = name === current
+      // Git refuses to check out a branch another worktree holds.
+      const elsewhere = !isCurrent && worktree ? `Checked out in the worktree ${baseName(worktree)} (${worktree})` : false
+      entries.push({
+        label: name,
+        checked: isCurrent,
+        hint: elsewhere ? 'worktree' : undefined,
+        disabled: isCurrent ? false : elsewhere || blocked || unsafe(name),
+        run: () => {
+          if (!isCurrent) void checkoutFlow(name)
+        }
+      })
+    }
+    if (tags.length > 0) {
+      entries.push('separator', { heading: tagsTruncated ? `Tags (newest ${tags.length})` : 'Tags' })
+      for (const name of tags) {
+        entries.push({ label: name, checked: false, disabled: blocked || unsafe(name), run: () => void checkoutTagFlow(name) })
+      }
+    }
+    const box = button.getBoundingClientRect()
+    button.setAttribute('aria-expanded', 'true')
+    openMenu(entries, { x: box.left, y: box.bottom + 4 }, {
+      below: true,
+      filter: branches.length + tags.length > FILTER_FROM ? 'Filter branches and tags' : undefined,
+      returnFocus: button,
+      onClose: () => {
+        closedAt = performance.now()
+        button.setAttribute('aria-expanded', 'false')
+      }
+    })
+  })
+}
+
 // ---- Toolbar and banner ----------------------------------------------------------------------
 
 /** Fetch, pull and push buttons for the header, kept in step with status and busy state. */
@@ -717,7 +810,6 @@ export function createToolbar(): { node: HTMLElement; render(status: RepoStatus 
   const button = (label: string, path: string, run: () => void) => {
     const b = el('button', 'tool')
     b.type = 'button'
-    b.title = label
     b.setAttribute('aria-label', label)
     const count = el('span', 'count')
     b.append(icon(path), count)
@@ -730,6 +822,21 @@ export function createToolbar(): { node: HTMLElement; render(status: RepoStatus 
   const pushButton = button('Push', ICONS.push, () => void push())
   let last: RepoStatus | null = null
 
+  // Each tooltip names the git command a click runs, built by the same code that runs it.
+  const tip = (label: string, action: GitAction): TipSpec => ({ label, command: commandOf(action, last?.remotes ?? []) ?? undefined })
+  tooltip(fetchButton.b, () => (last && last.remotes.length === 0 ? { label: 'Fetch: the repository has no remote' } : tip('Fetch all remotes', { kind: 'fetch' })))
+  tooltip(pullButton.b, () => {
+    if (!last?.upstream) return { label: 'Pull: the branch tracks no remote branch' }
+    return tip(`Pull from ${last.upstream}${last.behind ? ` (${last.behind} new)` : ''}`, { kind: 'pull', mode: 'ff-only' })
+  })
+  tooltip(pushButton.b, () => {
+    if (!last?.branch) return { label: 'Push: HEAD is detached' }
+    if (last.upstream) return tip(`Push to ${last.upstream}${last.ahead ? ` (${last.ahead} to push)` : ''}`, { kind: 'push', force: false })
+    const remote = defaultRemote(last)
+    if (!remote) return { label: 'Push: the repository has no remote' }
+    return tip(`Publish ${last.branch} to ${remote}`, { kind: 'pushBranch', branch: last.branch, remote, setUpstream: true, force: false })
+  })
+
   const render = (status: RepoStatus | null) => {
     last = status
     node.hidden = !status
@@ -740,12 +847,6 @@ export function createToolbar(): { node: HTMLElement; render(status: RepoStatus 
     pushButton.b.disabled = busy || !remote || !status.branch
     pullButton.count.textContent = status.behind ? String(status.behind) : ''
     pushButton.count.textContent = status.ahead ? String(status.ahead) : ''
-    pullButton.b.title = status.upstream ? `Pull from ${status.upstream}${status.behind ? ` (${status.behind} new)` : ''}` : 'Pull: the branch tracks no remote branch'
-    pushButton.b.title = !status.branch
-      ? 'Push: HEAD is detached'
-      : status.upstream
-        ? `Push to ${status.upstream}${status.ahead ? ` (${status.ahead} to push)` : ''}`
-        : `Publish ${status.branch}`
     node.classList.toggle('busy', busy)
   }
   busyListeners.add(() => render(last))

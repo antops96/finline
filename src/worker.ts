@@ -15,6 +15,7 @@ import {
   readCommitDetails,
   readCommits,
   readFileDiff,
+  readRefList,
   readStatus,
   readWorktreeChanges,
   registerRepoHost,
@@ -33,6 +34,7 @@ import type {
   DiffTarget,
   GraphLoad,
   OpenResult,
+  RefsLoad,
   StatusLoad,
   WorktreeLoad
 } from './types'
@@ -47,6 +49,8 @@ const WORKTREE_DEBOUNCE_MS = 500
 const WORKTREE_MAX_WAIT_MS = 3000
 // About 100 bytes of JSON per file; a huge commit lists the first ones and says it was cut.
 const MAX_FILES = 2000
+// The branch switcher filters by name; past this many tags it says the list was cut.
+const MAX_TAGS = 500
 const HASH = /^[0-9a-f]{4,64}$/i
 // Paths under the git dir whose change means the graph may have changed.
 // Stopped merges, rebases and cherry-picks leave marker files there too.
@@ -346,6 +350,15 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!served.has(path)) return { ok: false, message: 'Unknown repository; reload the graph.' }
     try {
       return { ok: true, status: await readStatus(path, signal) }
+    } catch (error) {
+      return { ok: false, message: (error as Error).message }
+    }
+  })
+
+  orca.panels.handle('refs.list', async ({ path }, { signal }): Promise<RefsLoad> => {
+    if (!served.has(path)) return { ok: false, message: 'Unknown repository; reload the graph.' }
+    try {
+      return { ok: true, refs: await readRefList(path, MAX_TAGS, signal) }
     } catch (error) {
       return { ok: false, message: (error as Error).message }
     }

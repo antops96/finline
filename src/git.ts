@@ -15,6 +15,7 @@ import type {
   FileStatus,
   Operation,
   Ref,
+  RefList,
   RepoStatus,
   WorktreeChanges
 } from './types'
@@ -256,6 +257,37 @@ export async function gitVersion(cwd = '.'): Promise<string> {
 
 export async function remoteNames(cwd: string): Promise<string[]> {
   return (await git(cwd, ['remote'])).split(/\r?\n/).filter(Boolean)
+}
+
+const REF_LIST_FORMAT = '%(refname)%00%(worktreepath)'
+
+/** Parses `git for-each-ref --format=%(refname)%00%(worktreepath)` over refs/heads and refs/tags. */
+export function parseRefList(out: string, maxTags: number): RefList {
+  const list: RefList = { branches: [], tags: [], tagsTruncated: false }
+  for (const line of out.split(/\r?\n/)) {
+    const [refname, worktree = ''] = line.split('\0')
+    if (refname.startsWith('refs/heads/')) {
+      list.branches.push({ name: refname.slice('refs/heads/'.length), worktree: worktree || null })
+    } else if (refname.startsWith('refs/tags/')) {
+      if (list.tags.length < maxTags) list.tags.push(refname.slice('refs/tags/'.length))
+      else list.tagsTruncated = true
+    }
+  }
+  return list
+}
+
+/** Local branches and tags, most recent first. */
+export async function readRefList(cwd: string, maxTags: number, signal?: AbortSignal): Promise<RefList> {
+  const list = (format: string) => git(cwd, ['for-each-ref', '--sort=-creatordate', `--format=${format}`, 'refs/heads', 'refs/tags'], signal)
+  let out: string
+  try {
+    out = await list(REF_LIST_FORMAT)
+  } catch (error) {
+    // git before 2.23 has no %(worktreepath).
+    if (!/worktreepath/.test((error as Error).message)) throw error
+    out = await list('%(refname)')
+  }
+  return parseRefList(out, maxTags)
 }
 
 /** Splits a `%D` decoration list into typed refs. */

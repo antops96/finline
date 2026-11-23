@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePatch } from './diff.ts'
-import { git, parseDiffTree, parseStatus, readCommitDetails, readFileDiff, readWorktreeChanges } from './git.ts'
+import { git, parseDiffTree, parseRefList, parseStatus, readCommitDetails, readFileDiff, readRefList, readWorktreeChanges } from './git.ts'
 
 const Z = '0000000000000000000000000000000000000000'
 const raw = (status: string) => `:100644 100644 ${Z} ${Z} ${status}`
@@ -89,6 +89,49 @@ test('worktree changes list staged, unstaged and untracked files against HEAD', 
     const capped = await readWorktreeChanges(dir, 2)
     assert.equal(capped.files.length, 2)
     assert.equal(capped.filesTruncated, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('parseRefList splits branches from tags and caps the tags', () => {
+  const out = ['refs/heads/main\0/repo', 'refs/tags/v2\0', 'refs/heads/feat/x\0', 'refs/tags/v1\0', ''].join('\n')
+  assert.deepEqual(parseRefList(out, 10), {
+    branches: [
+      { name: 'main', worktree: '/repo' },
+      { name: 'feat/x', worktree: null }
+    ],
+    tags: ['v2', 'v1'],
+    tagsTruncated: false
+  })
+  assert.deepEqual(parseRefList(out, 1).tags, ['v2'])
+  assert.equal(parseRefList(out, 1).tagsTruncated, true)
+  // Without %(worktreepath) (git before 2.23) a line is the ref name alone.
+  assert.deepEqual(parseRefList('refs/heads/main\n', 10).branches, [{ name: 'main', worktree: null }])
+})
+
+test('readRefList reads local branches with their worktree, and tags', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'finline-refs-'))
+  try {
+    const run = (...args: string[]) => git(dir, args)
+    await run('init', '-q', '-b', 'main')
+    await run('config', 'user.email', 'test@example.com')
+    await run('config', 'user.name', 'Test')
+    await writeFile(join(dir, 'a.txt'), 'a\n')
+    await run('add', '.')
+    await run('commit', '-q', '-m', 'init')
+    await run('branch', 'feat/x')
+    await run('tag', 'v1.0')
+    await run('update-ref', 'refs/remotes/origin/main', 'HEAD') // remote branches stay out
+
+    const refs = await readRefList(dir, 100)
+    assert.deepEqual(refs.branches.map((b) => b.name).sort(), ['feat/x', 'main'])
+    assert.ok(refs.branches.find((b) => b.name === 'main')?.worktree)
+    assert.equal(refs.branches.find((b) => b.name === 'feat/x')?.worktree, null)
+    assert.deepEqual(refs.tags, ['v1.0'])
+
+    await run('switch', '-q', '--detach', 'refs/tags/v1.0') // what checkoutTag runs
+    assert.equal((await run('rev-parse', '--abbrev-ref', 'HEAD')).trim(), 'HEAD')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
