@@ -166,3 +166,30 @@ export type GraphLoad =
       message: string
       candidates: Candidate[]
     }
+
+/** One file's diff to show: `rev` is a commit hash, or 'worktree' for the uncommitted changes. */
+export interface DiffTarget {
+  rev: string
+  file: string
+  /** Source path of a rename or copy. */
+  from?: string
+}
+
+export interface FileDiff {
+  file: string
+  from?: string
+  /** Commit the left side comes from; null when the file did not exist there. */
+  oldRev: string | null
+  /** Commit the right side comes from; null for the working tree. */
+  newRev: string | null
+  /** `git diff` output for the file. */
+  patch: string
+  /** Only the changed regions were sent, with 3 lines of context: the whole file was too big. */
+  partial: boolean
+  /** The patch was cut at the size cap. */
+  truncated: boolean
+}
+
+export type DiffLoad = { ok: true; diff: FileDiff } | { ok: false; message: string }
+
+export type OpenResult = { ok: true } | { ok: false; message: string }
