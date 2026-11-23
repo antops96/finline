@@ -345,16 +345,31 @@ export function parseDiffTree(out: string): FileChange[] {
   return files
 }
 
+const FULL_HASH = /^[0-9a-f]{40,64}$/
+
+/**
+ * The commit `rev` names, as its full hash with its parents' after it. A hex string may as well
+ * name a blob or a tree, whose content `git show` would print: nothing read from an object goes
+ * into git arguments unless it is a hash that came from here.
+ */
+export async function resolveCommit(cwd: string, rev: string, signal?: AbortSignal): Promise<{ hash: string; parents: string[] }> {
+  const hash = (await git(cwd, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], signal)).trim()
+  if (!FULL_HASH.test(hash)) throw new Error(`Not a commit: ${rev}`)
+  const [, ...parents] = (await git(cwd, ['rev-list', '--parents', '-n', '1', hash], signal)).trim().split(' ')
+  if (!parents.every((parent) => FULL_HASH.test(parent))) throw new Error(`Not a commit: ${rev}`)
+  return { hash, parents }
+}
+
 export async function readCommitDetails(
   cwd: string,
   hash: string,
   maxFiles: number,
   signal?: AbortSignal
 ): Promise<CommitDetails> {
-  const out = await git(cwd, ['show', '-s', '--no-show-signature', `--format=${DETAILS_FORMAT}`, hash], signal)
+  const { hash: full, parents: parentList } = await resolveCommit(cwd, hash, signal)
+  const out = await git(cwd, ['show', '-s', '--no-show-signature', `--format=${DETAILS_FORMAT}`, full], signal)
   const fields = out.split(FIELD)
-  const [full, parents, author, authorEmail, at, committer, committerEmail, ct] = fields
-  const parentList = parents ? parents.split(' ') : []
+  const [, , author, authorEmail, at, committer, committerEmail, ct] = fields
   const comparedTo = parentList[0] ?? null
   // Merges are compared with their first parent, the root commit with the empty tree.
   const range = comparedTo ? [comparedTo, full] : ['--root', full]
@@ -424,8 +439,10 @@ export async function readWorktreeChanges(cwd: string, maxFiles: number, signal?
   }
 }
 
-/** A patch is sent whole up to this many characters: well under the 1 MiB answer cap as JSON. */
-export const MAX_PATCH = 400_000
+/** A patch is sent whole up to this many bytes of JSON: under the 1 MiB answer cap, with room for the rest. */
+export const MAX_PATCH = 800_000
+// What the patch weighs in the answer: non-ASCII text and escapes take several bytes a character.
+const answerBytes = (patch: string) => Buffer.byteLength(JSON.stringify(patch))
 // Context lines that take in any whole file, so both sides can be read top to bottom.
 const WHOLE_FILE = 1_000_000
 // An untracked file bigger than this is not read: it is reported like a binary one.
@@ -471,8 +488,8 @@ export async function readFileDiff(
     newRev = null
     command = (context) => ['--literal-pathspecs', 'diff', 'HEAD', ...options(context), '--', ...paths]
   } else {
-    const out = await git(cwd, ['show', '-s', '--no-show-signature', '--format=%H %P', rev], signal)
-    const [full, parent] = out.trim().split(' ')
+    const { hash: full, parents } = await resolveCommit(cwd, rev, signal)
+    const parent = parents[0]
     oldRev = parent ?? null
     newRev = full
     const range = parent ? [parent, full] : ['--root', full]
@@ -488,14 +505,16 @@ export async function readFileDiff(
       patch = await untrackedPatch(join(await fsPath(cwd, top), file), file)
       oldRev = null
     }
-  } else if (patch.length > maxPatch) {
+  } else if (answerBytes(patch) > maxPatch) {
     patch = await git(cwd, command(3), signal)
     partial = true
   }
-  const truncated = patch.length > maxPatch
-  if (truncated) {
-    partial = true
-    patch = patch.slice(0, patch.lastIndexOf('\n', maxPatch - 1) + 1)
+  const truncated = answerBytes(patch) > maxPatch
+  if (truncated) partial = true
+  // Cut at a line end, by the share of the patch that fits, until what is left does.
+  for (let size = answerBytes(patch); size > maxPatch; size = answerBytes(patch)) {
+    const keep = Math.floor((patch.length * maxPatch * 0.95) / size)
+    patch = patch.slice(0, patch.lastIndexOf('\n', Math.max(keep - 1, 0)) + 1)
   }
   return { file, ...(from ? { from } : {}), oldRev, newRev, patch, partial, truncated }
 }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePatch } from './diff.ts'
-import { git, parseDiffTree, parseStatus, readFileDiff, readWorktreeChanges } from './git.ts'
+import { git, parseDiffTree, parseStatus, readCommitDetails, readFileDiff, readWorktreeChanges } from './git.ts'
 
 const Z = '0000000000000000000000000000000000000000'
 const raw = (status: string) => `:100644 100644 ${Z} ${Z} ${status}`
@@ -228,6 +228,49 @@ test('file diff too big for one answer falls back to changed regions, then is cu
     assert.equal(cut.truncated, true)
     assert.ok(cut.patch.length <= 150)
     assert.ok(cut.patch.endsWith('\n'))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// A ticket is a file anyone can commit, so its `rev` is untrusted: a hex string can name a blob,
+// and `git show` prints a blob's content, which must never become git arguments.
+test('refuses a rev that is not a commit, whatever the object holds', async () => {
+  const { dir } = await diffRepo()
+  const target = join(dir, 'PWNED')
+  try {
+    await writeFile(join(dir, 'payload'), `--output=${target} HEAD`)
+    const blob = (await git(dir, ['hash-object', '-w', 'payload'])).trim()
+    await assert.rejects(readFileDiff(dir, { rev: blob, file: 'i.tsx' }))
+    await assert.rejects(readCommitDetails(dir, blob, 100))
+    await assert.rejects(access(target))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the size limit counts the bytes of the answer, not characters', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'finline-cjk-'))
+  try {
+    const run = (...args: string[]) => git(dir, args)
+    await run('init', '-q')
+    await run('config', 'user.email', 'test@example.com')
+    await run('config', 'user.name', 'Test')
+    const body = Array.from({ length: 300 }, () => 'あ'.repeat(20))
+    await writeFile(join(dir, 'ja.txt'), body.join('\n') + '\n')
+    await run('add', '.')
+    await run('commit', '-q', '-m', 'one')
+    body[150] = 'い'.repeat(20)
+    await writeFile(join(dir, 'ja.txt'), body.join('\n') + '\n')
+    await run('commit', '-q', '-am', 'two')
+    const head = (await run('rev-parse', 'HEAD')).trim()
+    // About 6,700 characters whole, but about 19,000 bytes as JSON.
+    const diff = await readFileDiff(dir, { rev: head, file: 'ja.txt' }, undefined, 10_000)
+    assert.equal(diff.partial, true)
+    assert.equal(diff.truncated, false)
+    const cut = await readFileDiff(dir, { rev: head, file: 'ja.txt' }, undefined, 400)
+    assert.equal(cut.truncated, true)
+    assert.ok(Buffer.byteLength(JSON.stringify(cut.patch)) <= 400)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

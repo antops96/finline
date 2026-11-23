@@ -130,7 +130,9 @@ function render(diff: FileDiff, keepScroll: boolean): void {
   bannerEl.hidden = notes.length === 0
 
   if (patch.binary) return showNotice('Binary file: there is no text to compare.')
-  if (rows.length === 0) return showNotice('No changes to the content of this file.')
+  if (rows.length === 0) {
+    return showNotice(diff.truncated ? 'The changed lines are too long to show here.' : 'No changes to the content of this file.')
+  }
 
   oldSideEl.textContent = diff.oldRev ? short(diff.oldRev) : 'Not present'
   newSideEl.textContent = diff.newRev ? short(diff.newRev) : 'Working tree'
