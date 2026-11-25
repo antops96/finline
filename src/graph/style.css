@@ -11,7 +11,9 @@
   --lane-7: #ef4444;
   --fg: var(--orca-foreground, #ddd);
   --muted: var(--orca-muted-foreground, #999);
-  --bg: var(--orca-background, #1a1a1a);
+  /* Orca paints its right sidebar with --sidebar, which frames don't get. --card is the same grey
+     in the built-in themes; --background is the darker app canvas. */
+  --bg: var(--orca-card, var(--orca-background, #171717));
   --border: var(--orca-border, #333);
   --hover: color-mix(in srgb, var(--fg) 6%, transparent);
   --selected: color-mix(in srgb, var(--orca-primary, #3b82f6) 22%, transparent);
