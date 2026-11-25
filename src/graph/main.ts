@@ -20,6 +20,7 @@ import type {
 import { commitMenu, createToolbar, initActions, refMenu, renderBanner, stashMenu, worktreeMenu } from './actions.ts'
 import { el, icon, ICONS, moving, svg } from './dom.ts'
 import { orca } from './frame.ts'
+import { openMenu, type MenuEntry } from './overlay.ts'
 
 const PAGE = 200
 const ROW_H = 24
@@ -34,7 +35,6 @@ const $ = <T extends Element>(id: string) => document.getElementById(id) as unkn
 const repoEl = $<HTMLElement>('repo')
 const branchEl = $<HTMLElement>('branch')
 const refreshEl = $<HTMLButtonElement>('refresh')
-const switchRepoEl = $<HTMLButtonElement>('switch-repo')
 const messageEl = $<HTMLElement>('message')
 const listEl = $<HTMLElement>('list')
 const graphEl = $<SVGSVGElement>('graph')
@@ -103,7 +103,7 @@ async function pin(path: string): Promise<void> {
 /** True when the shown repo came from a pick, so it can be picked again. */
 let pickedRepo = false
 
-/** Forgets this workspace's pick; the worker answers `ambiguous` again and the picker returns. */
+/** Forgets this workspace's pick: the graph follows the focused workspace again, or the picker returns if it is ambiguous. */
 async function unpin(): Promise<void> {
   const pins = readPins()
   for (const id of await terminalIds()) delete pins[id]
@@ -197,6 +197,42 @@ let status: RepoStatus | null = null
 let statusSeq = 0
 const toolbar = createToolbar()
 refreshEl.closest('header')?.after(toolbar.node)
+// The repository name in the header is a button: it points the graph at another workspace's repository.
+const switchRepoEl = $<HTMLButtonElement>('switch-repo')
+
+const sameRepoPath = (a: string, b: string) => a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase()
+
+/** The menu of local workspaces; a pick stays until "Follow the focused workspace". */
+async function openRepoMenu(): Promise<void> {
+  let repos: Candidate[]
+  try {
+    repos = (await orca.plugin.request('repo.list', {})).repos
+  } catch (error) {
+    showError(error)
+    return
+  }
+  const box = switchRepoEl.getBoundingClientRect()
+  const entries: MenuEntry[] = [{ heading: repos.length ? 'Show the repository of' : 'No local workspaces' }]
+  for (const candidate of repos) {
+    const current = repo !== null && sameRepoPath(candidate.path, repo.path)
+    entries.push({
+      label: candidate.name,
+      hint: current ? 'shown' : (candidate.branch ?? undefined),
+      disabled: current,
+      run: async () => {
+        sessionPick = candidate.path
+        await pin(candidate.path)
+        void refresh()
+      }
+    })
+  }
+  entries.push('separator', {
+    label: 'Follow the focused workspace',
+    disabled: pickedRepo ? false : 'Already following it',
+    run: () => void unpin()
+  })
+  openMenu(entries, { x: box.left, y: box.bottom + 4 }, { returnFocus: switchRepoEl })
+}
 
 function setStatus(next: RepoStatus | null): void {
   const before = wipLabel()
@@ -321,10 +357,11 @@ const laneColor = (i: number) => `var(--lane-${i % LANE_COLORS})`
 
 function renderHeader(): void {
   repoEl.textContent = repo?.name ?? 'Finline'
-  repoEl.title = repo?.path ?? ''
   branchEl.hidden = !repo?.branch
   branchEl.textContent = repo?.branch ?? ''
-  switchRepoEl.hidden = !(repo && pickedRepo)
+  switchRepoEl.classList.toggle('on', pickedRepo)
+  const where = repo ? `${repo.path}\n` : ''
+  switchRepoEl.title = `${where}${pickedRepo ? 'Picked: not following the focused workspace. Click to change' : 'Click to show another repository'}`
 }
 
 // ---- Motion --------------------------------------------------------------------------------
@@ -999,8 +1036,7 @@ document.addEventListener('keydown', (event) => {
 
 listEl.addEventListener('scroll', maybeLoadMore, { passive: true })
 refreshEl.addEventListener('click', () => void refresh())
-switchRepoEl.append(icon(ICONS.switch))
-switchRepoEl.addEventListener('click', () => void unpin())
+switchRepoEl.addEventListener('click', () => void openRepoMenu())
 
 orca.plugin.on('repo.changed', () => void refresh())
 // A file was saved or deleted: only the uncommitted-changes row (and its open details) moves.

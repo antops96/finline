@@ -94,6 +94,11 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
     workspaceIdByPath.set(w.path, w.id)
     return { ok: true, path: w.path, resolvedBy, workspaceId: w.id }
   }
+  // A pick from the panel wins over the focused workspace, but only for a path Orca lists as a
+  // local workspace: the panel can point the graph at another workspace, never at any folder.
+  const pinned = preferredPath ? workspaces.find((w) => isLocal(w.hostId) && samePath(w.path, preferredPath)) : undefined
+  // Picking the focused workspace itself is not a pick: it keeps following.
+  if (pinned && !byId.includes(pinned)) return found(pinned, 'pinned')
   if (byId.length > 0 && isLocal(byId[0].hostId)) return found(byId[0], 'workspace id')
   // Without an id, match by name and branch.
   const matches =
@@ -105,8 +110,6 @@ async function resolveRepo(orca: OrcaWorkerApi, preferredPath?: string): Promise
   if (local.length === 1) return found(local[0], 'name+branch (local)')
 
   if (local.length > 1) {
-    const pinned = preferredPath ? local.find((w) => samePath(w.path, preferredPath)) : undefined
-    if (pinned) return found(pinned, `pinned (1 of ${local.length})`)
     const candidates: Candidate[] = local.map((w) => ({ path: w.path, name: basename(w.path), branch: w.branch }))
     return {
       ok: false,
@@ -332,6 +335,19 @@ export default function activate(orca: OrcaWorkerApi): void {
     } catch (error) {
       return { ok: false, reason: 'git-failed', message: (error as Error).message }
     }
+  })
+
+  orca.panels.handle('repo.list', async (): Promise<{ repos: Candidate[] }> => {
+    const { workspaces } = await orca.host.call('workspace.list', {})
+    const seen = new Set<string>()
+    const repos: Candidate[] = []
+    for (const w of workspaces) {
+      const key = w.path.replace(/\\/g, '/').toLowerCase()
+      if (!isLocal(w.hostId) || seen.has(key)) continue
+      seen.add(key)
+      repos.push({ path: w.path, name: basename(w.path), branch: w.branch ?? null })
+    }
+    return { repos: repos.sort((a, b) => a.name.localeCompare(b.name)) }
   })
 
   orca.panels.handle('repo.status', async ({ path }, { signal }): Promise<StatusLoad> => {

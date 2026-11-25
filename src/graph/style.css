@@ -55,16 +55,51 @@ body {
   flex: none;
 }
 
+.repo-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 24px;
+  margin: 0 auto 0 -6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.repo-button:hover {
+  background: var(--hover);
+}
+
+.repo-button svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A picked repository, not the focused workspace's. */
+.repo-button.on svg {
+  stroke: var(--orca-primary, #3b82f6);
+}
+
 .repo {
   font-weight: 600;
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 
 .branch {
+  flex: none;
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--orca-secondary, #2a2a2a);
