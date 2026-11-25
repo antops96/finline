@@ -841,23 +841,25 @@ export function stashMenu(stash: Stash, at: { x: number; y: number }, options?: 
 
 // ---- Toolbar and banner ----------------------------------------------------------------------
 
-/** Fetch, pull and push buttons for the header, kept in step with status and busy state. */
+/** The row of labelled fetch, pull, push and stash buttons under the header, kept in step with status and busy state. */
 export function createToolbar(): { node: HTMLElement; render(status: RepoStatus | null): void } {
   const node = el('div', 'toolbar')
+  node.setAttribute('role', 'toolbar')
+  node.setAttribute('aria-label', 'Git actions')
   const button = (label: string, path: string, run: () => void) => {
     const b = el('button', 'tool')
     b.type = 'button'
     b.title = label
-    b.setAttribute('aria-label', label)
     const count = el('span', 'count')
-    b.append(icon(path), count)
+    b.append(icon(path), el('span', 'tool-label', label), count)
     b.addEventListener('click', run)
     node.append(b)
     return { b, count }
   }
-  const fetchButton = button('Fetch all remotes', ICONS.fetch, () => void fetchAll())
+  const fetchButton = button('Fetch', ICONS.fetch, () => void fetchAll())
   const pullButton = button('Pull', ICONS.pull, () => void pull())
   const pushButton = button('Push', ICONS.push, () => void push())
+  const stashButton = button('Stash', ICONS.stash, () => void stashFlow())
   let last: RepoStatus | null = null
 
   const render = (status: RepoStatus | null) => {
@@ -865,11 +867,17 @@ export function createToolbar(): { node: HTMLElement; render(status: RepoStatus 
     node.hidden = !status
     if (!status) return
     const remote = status.remotes.length > 0
+    const changes = status.staged + status.unstaged + status.untracked
+    const blocked = status.operation ? `Finish the ${status.operation} first` : status.conflicts > 0 ? 'Resolve the conflicts first' : ''
     fetchButton.b.disabled = busy || !remote
+    fetchButton.b.title = remote ? 'Fetch all remotes' : 'Fetch: the repository has no remote'
     pullButton.b.disabled = busy || !status.upstream
     pushButton.b.disabled = busy || !remote || !status.branch
+    stashButton.b.disabled = busy || changes === 0 || blocked !== ''
+    stashButton.b.title = blocked ? `Stash: ${blocked}` : changes ? `Stash ${changes} uncommitted change${changes === 1 ? '' : 's'}` : 'Stash: nothing to stash'
     pullButton.count.textContent = status.behind ? String(status.behind) : ''
     pushButton.count.textContent = status.ahead ? String(status.ahead) : ''
+    stashButton.count.textContent = changes ? String(changes) : ''
     pullButton.b.title = status.upstream ? `Pull from ${status.upstream}${status.behind ? ` (${status.behind} new)` : ''}` : 'Pull: the branch tracks no remote branch'
     pushButton.b.title = !status.branch
       ? 'Push: HEAD is detached'

@@ -756,19 +756,25 @@ button.tree-row:hover .name {
 
 .toolbar {
   display: flex;
-  gap: 2px;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  flex: none;
 }
 
 .tool {
   display: inline-flex;
+  flex: 1 1 auto;
   align-items: center;
-  gap: 2px;
-  height: 24px;
-  min-width: 24px;
-  padding: 0 5px;
-  border: 0;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  min-width: 0;
+  padding: 0 6px;
+  border: 1px solid var(--surface-line);
   border-radius: 6px;
-  background: transparent;
+  background: var(--surface-2);
   color: inherit;
   cursor: pointer;
   transition:
@@ -777,7 +783,17 @@ button.tree-row:hover .name {
 }
 
 .tool:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--surface-line);
+}
+
+.tool svg {
+  flex: none;
+}
+
+.tool-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool:active:not(:disabled) {
@@ -806,9 +822,16 @@ button.tree-row:hover .name {
 }
 
 .tool .count {
-  font-size: 11px;
+  flex: none;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--orca-primary, #3b82f6) 22%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
-  color: var(--orca-primary, #3b82f6);
+  text-align: center;
 }
 
 .tool .count:empty {

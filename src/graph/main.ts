@@ -196,7 +196,7 @@ async function apply(result: GraphLoad, append: boolean): Promise<void> {
 let status: RepoStatus | null = null
 let statusSeq = 0
 const toolbar = createToolbar()
-refreshEl.before(toolbar.node)
+refreshEl.closest('header')?.after(toolbar.node)
 
 function setStatus(next: RepoStatus | null): void {
   const before = wipLabel()

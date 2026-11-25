@@ -30,6 +30,7 @@ export const ICONS = {
   fetch: 'M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10',
   pull: 'M8 2.5v9M4.5 8L8 11.5 11.5 8',
   push: 'M8 13.5v-9M4.5 8L8 4.5 11.5 8',
+  stash: 'M2.5 3.5h11v3h-11zM3.5 6.5v6h9v-6M6.5 9.5h3',
   warning: 'M8 2.5l6 11H2zM8 7v3M8 12h.01',
   check: 'M3.5 8.5l3 3 6-7',
   switch: 'M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13'
