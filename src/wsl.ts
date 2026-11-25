@@ -146,8 +146,10 @@ export async function hostPath(cwd: string, gitPath: string): Promise<string> {
 const FINGERPRINT = [
   'g="git --no-optional-locks"',
   'd=$($g rev-parse --path-format=absolute --git-dir) || exit 1',
+  'c=$($g rev-parse --path-format=absolute --git-common-dir) || exit 1',
+  // The stash reflog: dropping a stash other than the newest changes only that, not refs/stash.
   '{ $g for-each-ref --format="%(refname) %(objectname)"; cat "$d/HEAD";',
-  '  stat -c "%n %Y %s" "$d/index" "$d/MERGE_HEAD" "$d/CHERRY_PICK_HEAD" "$d/REVERT_HEAD" "$d/rebase-merge" "$d/rebase-apply" 2>/dev/null; } | cksum',
+  '  stat -c "%n %Y %s" "$d/index" "$d/MERGE_HEAD" "$d/CHERRY_PICK_HEAD" "$d/REVERT_HEAD" "$d/rebase-merge" "$d/rebase-apply" "$c/logs/refs/stash" 2>/dev/null; } | cksum',
   '{ $g status --porcelain=v2 -z --untracked-files=normal; $g diff HEAD --numstat 2>/dev/null; } | cksum'
 ].join('\n')
 
